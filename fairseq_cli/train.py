@@ -107,6 +107,10 @@ def main(args, init_distributed=False):
         xm.rendezvous('load_checkpoint')  # wait for all workers
         xm.mark_step()
 
+    # NOTE: Ugly hack to initialize modular layer controller for training
+    if args.arch == 'transformer_modular_v2':
+        model.initialize_best_selection(len(task.datasets['train']))
+
     # NOTE: Ugly hack to initialize modular attention controller for training
     if args.arch == 'transformer_modular_v2':
         model.initialize_best_selection(len(task.datasets['train']))
