@@ -130,3 +130,7 @@ data-bin/
 
 # Experimental Folder
 experimental/*
+
+# (varisd) Custom ignores
+.qsubmit*
+experiments/*
