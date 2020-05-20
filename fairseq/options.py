@@ -588,6 +588,9 @@ def add_generation_args(parser):
                        help='strength of diversity penalty for Diverse Siblings Search')
     group.add_argument('--print-alignment', action='store_true',
                        help='if set, uses attention feedback to compute and print alignment to source tokens')
+    group.add_argument('--print-selection', action='store_true',
+                       help='if set, print selections from modular_multihead_attention controller')
+
     group.add_argument('--print-step', action='store_true')
 
     # arguments for iterative refinement generator

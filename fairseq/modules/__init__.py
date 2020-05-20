@@ -23,6 +23,8 @@ from .learned_positional_embedding import LearnedPositionalEmbedding
 from .lightweight_convolution import LightweightConv, LightweightConv1dTBC
 from .linearized_convolution import LinearizedConvolution
 from .multihead_attention import MultiheadAttention
+from .modular_multihead_attention import ModularMultiheadAttention
+from .modular_multihead_attention_v2 import ModularMultiheadAttentionV2
 from .positional_embedding import PositionalEmbedding
 from .scalar_bias import ScalarBias
 from .sinusoidal_positional_embedding import SinusoidalPositionalEmbedding
@@ -30,6 +32,8 @@ from .transformer_sentence_encoder_layer import TransformerSentenceEncoderLayer
 from .transformer_sentence_encoder import TransformerSentenceEncoder
 from .unfold import unfold1d
 from .transformer_layer import TransformerDecoderLayer, TransformerEncoderLayer
+from .transformer_modular_layer import TransformerModularEncoderLayer
+from .transformer_modular_layer_v2 import TransformerModularEncoderLayerV2
 from .vggblock import VGGBlock
 
 __all__ = [
@@ -57,6 +61,8 @@ __all__ = [
     'LightweightConv',
     'LinearizedConvolution',
     'MultiheadAttention',
+    'ModularMultiheadAttention',
+    'ModularMultiheadAttentionV2',
     'PositionalEmbedding',
     'ScalarBias',
     'SinusoidalPositionalEmbedding',
@@ -64,6 +70,8 @@ __all__ = [
     'TransformerSentenceEncoder',
     'TransformerDecoderLayer',
     'TransformerEncoderLayer',
+    'TransformerModularEncoderLayer',
+    'TransformerModularEncoderLayerV2',
     'VGGBlock',
     'unfold1d',
 ]

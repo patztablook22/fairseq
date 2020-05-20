@@ -221,6 +221,8 @@ def _main(args, output_file):
 
                     if args.print_step:
                         print('I-{}\t{}'.format(sample_id, hypo['steps']), file=output_file)
+                    if 'selections' in hypo:
+                        print('M-{}\t{}'.format(sample_id, hypo['selections']), file=output_file)
 
                     if getattr(args, 'retain_iter_history', False):
                         for step, h in enumerate(hypo['history']):

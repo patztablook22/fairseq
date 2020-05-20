@@ -5,6 +5,7 @@
 
 import math
 from typing import Dict, List, Optional
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -872,6 +873,40 @@ class SequenceGeneratorWithAlignment(SequenceGenerator):
             move_eos_to_beginning=False,
         )
         return src_tokens, src_lengths, prev_output_tokens, tgt_tokens
+
+
+class SequenceGeneratorWithSelection(SequenceGenerator):
+
+    def __init__(self, tgt_dict, **kwargs):
+        """Generates translations of a given source sentence.
+
+        Produces module selections chosen by the modular layers in the model.
+
+        TODO - finish the docstring
+        """
+        super().__init__(tgt_dict, **kwargs)
+
+    @torch.no_grad()
+    def generate(self, models, sample, **kwargs):
+        model = EnsembleModel(models)
+        finalized = self._generate(model, sample, **kwargs)
+
+        encoder_input = {
+            k: v for k, v in sample['net_input'].items()
+            if k != 'prev_output_tokens'
+        }
+        bsz = encoder_input['src_tokens'].size(0)
+        encoder_outs = model.forward_encoder(encoder_input)
+        if hasattr(encoder_outs[0], 'selections'):
+            for i in range(bsz):
+                selections = ";".join([
+                    ":".join([
+                        ",".join(sel[i].cpu().numpy().astype(np.str))
+                        for sel in o.selections if sel is not None])
+                    for o in encoder_outs])
+                for j, _ in enumerate(finalized[i]):
+                    finalized[i][j]['selections'] = selections
+        return finalized
 
 
 class EnsembleModelWithAlignment(EnsembleModel):
