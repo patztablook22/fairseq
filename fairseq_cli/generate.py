@@ -328,6 +328,12 @@ def _main(cfg: DictConfig, output_file):
                             file=output_file,
                         )
 
+                    if cfg.generation.print_selection:
+                        print(
+                            'M-{}\t{}'.format(sample_id, hypo['selections']),
+                            file=output_file
+                        )
+
                     if cfg.generation.retain_iter_history:
                         for step, h in enumerate(hypo["history"]):
                             _, h_str, _ = utils.post_process_prediction(

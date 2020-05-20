@@ -59,7 +59,7 @@ for l in $src $tgt; do
     sed -e 's/<\/title>//g' | \
     sed -e 's/<description>//g' | \
     sed -e 's/<\/description>//g' | \
-    perl $TOKENIZER -threads 8 -l $l > $tmp/$tok
+    perl $TOKENIZER -l $l > $tmp/$tok
     echo ""
 done
 perl $CLEAN -ratio 1.5 $tmp/train.tags.$lang.tok $src $tgt $tmp/train.tags.$lang.clean 1 175
@@ -77,7 +77,7 @@ for l in $src $tgt; do
         sed -e 's/<seg id="[0-9]*">\s*//g' | \
         sed -e 's/\s*<\/seg>\s*//g' | \
         sed -e "s/\’/\'/g" | \
-    perl $TOKENIZER -threads 8 -l $l | \
+    perl $TOKENIZER -l $l | \
     perl $LC > $f
     echo ""
     done

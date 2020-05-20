@@ -92,7 +92,7 @@ for l in $src $tgt; do
         cat $orig/$f.$l | \
             perl $NORM_PUNC $l | \
             perl $REM_NON_PRINT_CHAR | \
-            perl $TOKENIZER -threads 8 -a -l $l >> $tmp/train.tags.$lang.tok.$l
+            perl $TOKENIZER -a -l $l >> $tmp/train.tags.$lang.tok.$l
     done
 done
 
@@ -107,7 +107,7 @@ for l in $src $tgt; do
         sed -e 's/<seg id="[0-9]*">\s*//g' | \
         sed -e 's/\s*<\/seg>\s*//g' | \
         sed -e "s/\’/\'/g" | \
-    perl $TOKENIZER -threads 8 -a -l $l > $tmp/test.$l
+    perl $TOKENIZER -a -l $l > $tmp/test.$l
     echo ""
 done
 

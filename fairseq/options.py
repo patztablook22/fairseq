@@ -365,6 +365,77 @@ def add_speech_generation_args(parser):
     # fmt: off
     group.add_argument('--eos_prob_threshold', default=0.5, type=float,
                        help='terminate when eos probability exceeds this')
+    group.add_argument('--beam', default=5, type=int, metavar='N',
+                       help='beam size')
+    group.add_argument('--nbest', default=1, type=int, metavar='N',
+                       help='number of hypotheses to output')
+    group.add_argument('--max-len-a', default=0, type=float, metavar='N',
+                       help=('generate sequences of maximum length ax + b, '
+                             'where x is the source length'))
+    group.add_argument('--max-len-b', default=200, type=int, metavar='N',
+                       help=('generate sequences of maximum length ax + b, '
+                             'where x is the source length'))
+    group.add_argument('--min-len', default=1, type=float, metavar='N',
+                       help=('minimum generation length'))
+    group.add_argument('--match-source-len', default=False, action='store_true',
+                       help=('generations should match the source length'))
+    group.add_argument('--no-early-stop', action='store_true',
+                       help='deprecated')
+    group.add_argument('--unnormalized', action='store_true',
+                       help='compare unnormalized hypothesis scores')
+    group.add_argument('--no-beamable-mm', action='store_true',
+                       help='don\'t use BeamableMM in attention layers')
+    group.add_argument('--lenpen', default=1, type=float,
+                       help='length penalty: <1.0 favors shorter, >1.0 favors longer sentences')
+    group.add_argument('--unkpen', default=0, type=float,
+                       help='unknown word penalty: <0 produces more unks, >0 produces fewer')
+    group.add_argument('--replace-unk', nargs='?', const=True, default=None,
+                       help='perform unknown replacement (optionally with alignment dictionary)')
+    group.add_argument('--sacrebleu', action='store_true',
+                       help='score with sacrebleu')
+    group.add_argument('--score-reference', action='store_true',
+                       help='just score the reference translation')
+    group.add_argument('--prefix-size', default=0, type=int, metavar='PS',
+                       help='initialize generation by target prefix of given length')
+    group.add_argument('--no-repeat-ngram-size', default=0, type=int, metavar='N',
+                       help='ngram blocking such that this size ngram cannot be repeated in the generation')
+    group.add_argument('--sampling', action='store_true',
+                       help='sample hypotheses instead of using beam search')
+    group.add_argument('--sampling-topk', default=-1, type=int, metavar='PS',
+                       help='sample from top K likely next words instead of all words')
+    group.add_argument('--sampling-topp', default=-1.0, type=float, metavar='PS',
+                       help='sample from the smallest set whose cumulative probability mass exceeds p for next words')
+    group.add_argument('--temperature', default=1., type=float, metavar='N',
+                       help='temperature for generation')
+    group.add_argument('--diverse-beam-groups', default=-1, type=int, metavar='N',
+                       help='number of groups for Diverse Beam Search')
+    group.add_argument('--diverse-beam-strength', default=0.5, type=float, metavar='N',
+                       help='strength of diversity penalty for Diverse Beam Search')
+    group.add_argument('--diversity-rate', default=-1.0, type=float, metavar='N',
+                       help='strength of diversity penalty for Diverse Siblings Search')
+    group.add_argument('--print-alignment', action='store_true',
+                       help='if set, uses attention feedback to compute and print alignment to source tokens')
+    group.add_argument('--print-selection', action='store_true',
+                       help='if set, print selections from modular_multihead_attention controller')
+
+    group.add_argument('--print-step', action='store_true')
+
+    # arguments for iterative refinement generator
+    group.add_argument('--iter-decode-eos-penalty', default=0.0, type=float, metavar='N',
+                       help='if > 0.0, it penalized early-stopping in decoding.')
+    group.add_argument('--iter-decode-max-iter', default=10, type=int, metavar='N',
+                       help='maximum iterations for iterative refinement.')
+    group.add_argument('--iter-decode-force-max-iter', action='store_true',
+                       help='if set, run exact the maximum number of iterations without early stop')
+    group.add_argument('--iter-decode-with-beam', default=1, type=int, metavar='N',
+                       help='if > 1, model will generate translations varying by the lengths.')
+    group.add_argument('--iter-decode-with-external-reranker', action='store_true',
+                       help='if set, the last checkpoint are assumed to be a reranker to rescore the translations'),
+    group.add_argument('--retain-iter-history', action='store_true',
+                       help='if set, decoding returns the whole history of iterative refinement')
+
+    # special decoding format for advanced decoding.
+    group.add_argument('--decoding-format', default=None, type=str, choices=['unigram', 'ensemble', 'vote', 'dp', 'bs'])
     # fmt: on
     return group
 
