@@ -173,6 +173,10 @@ def main(cfg: FairseqConfig) -> None:
 
         xm.rendezvous("load_checkpoint")  # wait for all workers
 
+    # NOTE: Ugly hack to initialize modular layer controller for training
+    if args.arch == 'transformer_modular_v2':
+        model.initialize_best_selection(len(task.datasets['train']))
+
     # NOTE: Ugly hack to initialize modular attention controller for training
     if args.arch == 'transformer_modular_v2':
         model.initialize_best_selection(len(task.datasets['train']))
