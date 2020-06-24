@@ -173,12 +173,8 @@ def main(cfg: FairseqConfig) -> None:
 
         xm.rendezvous("load_checkpoint")  # wait for all workers
 
-    # NOTE: Ugly hack to initialize modular layer controller for training
-    if args.arch == 'transformer_modular_v2':
-        model.initialize_best_selection(len(task.datasets['train']))
-
     # NOTE: Ugly hack to initialize modular attention controller for training
-    if args.arch == 'transformer_modular_v2':
+    if args.arch == 'transformer_modular':
         model.initialize_best_selection(len(task.datasets['train']))
 
     max_epoch = cfg.optimization.max_epoch or math.inf
@@ -275,6 +271,7 @@ def train(
         fix_batches_to_gpus=cfg.distributed_training.fix_batches_to_gpus,
         shuffle=(epoch_itr.next_epoch_idx > cfg.dataset.curriculum),
     )
+
     update_freq = (
         cfg.optimization.update_freq[epoch_itr.epoch - 1]
         if epoch_itr.epoch <= len(cfg.optimization.update_freq)

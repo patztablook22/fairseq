@@ -1027,6 +1027,8 @@ class Trainer(object):
                 self._log_oom(e)
                 logger.error("OOM during optimization, irrecoverable")
             raise e
+        except:
+            import pdb; pdb.set_trace()
 
         # Some distributed wrappers (e.g., SlowMo) need access to the optimizer
         # after the step

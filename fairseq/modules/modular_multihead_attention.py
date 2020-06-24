@@ -5,42 +5,58 @@
 
 import math
 from typing import Dict, Optional, Tuple
+import logging
 
 import torch
+import torch.nn.init as init
 import torch.nn.functional as F
 from fairseq import utils
-from torch import Tensor, nn, distributions
+from torch import Tensor, nn
+from torch.distributions.categorical import Categorical
 from torch.nn import Parameter
+from fairseq.distributions import FactoredCategorical
 from fairseq.modules.multihead_attention import MultiheadAttention
-from fairseq.incremental_decoding_utils import with_incremental_state
+from fairseq.modules.quant_noise import quant_noise
 
 
-def _tile(x, dim, n_tile):
-    repeat_idx = [1] * x.dim()
-    repeat_idx[dim] = n_tile
-    return x.repeat(repeat_idx)
+logger = logging.getLogger(__name__)
 
 
 class ModularLinear(nn.Module):
     """TODO"""
+
+    __constants__ = ['in_features', 'out_features', 'n_modules']
 
     def __init__(self,
                  in_features,
                  out_features,
                  n_modules,
                  bias=False,
-                 concat_dim=1):
-        super().__init__()
+                 concat_dim=0):
+        super(ModularLinear, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
         self.n_modules = n_modules
         self.concat_dim = concat_dim
         assert concat_dim in [0, 1]
 
-        self.weight = Parameter(
-            torch.Tensor(n_modules, in_features, out_features))
-        self.bias = None
+        self.weight = Parameter(torch.Tensor(
+            n_modules, out_features, in_features))
         if bias:
-            self.bias =  Parameter(
-                torch.Tensor(n_modules, out_features))
+            self.bias = Parameter(torch.Tensor(n_modules, out_features))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        with torch.no_grad():
+            for i in range(self.n_modules):
+                init.kaiming_uniform_(self.weight[i], a=math.sqrt(5))
+                if self.bias is not None:
+                    fan_in, _ = init._calculate_fan_in_and_fan_out(
+                        self.weight[i])
+                    bound = 1 / math.sqrt(fan_in)
+                    init.uniform_(self.bias[i], -bound, bound)
 
     def forward(self, x, selection, time_major=True):
         assert selection.dim() == 2
@@ -51,18 +67,16 @@ class ModularLinear(nn.Module):
         outputs = []
         for i in range(selection.size(0)):
             sel = selection[i]
-            #assert sel.max() < self.n_modules
-            if sel.max() >= self.n_modules:
-                print(sel.max())
-                print(self.n_modules)
+            assert sel.max() < self.n_modules
 
-            w = torch.cat([x for x in self.weight[sel]], self.concat_dim)
-            o = torch.matmul(x[i], w)
-            if self.bias is not None:
-                if self.concat_dim == 0:
-                    o += self.bias[sel].sum(0).view(1, -1)
+            w = torch.cat([self.weight[k] for k in sel], self.concat_dim)
+            b = self.bias
+            if b is not None:
+                if self.concat_dim == 1:
+                    b = self.bias[sel].sum(0).view(-1)
                 else:
-                    o += self.bias[sel].view(1, -1)
+                    b = self.bias[sel].view(-1)
+            o = F.linear(x[i], w, b)
             outputs.append(o)
 
         outputs = torch.stack(outputs, dim=0)
@@ -70,6 +84,12 @@ class ModularLinear(nn.Module):
             outputs = outputs.transpose(0, 1)
 
         return outputs
+
+    def extra_repr(self):
+        return 'in_features={}, out_features={}, bias={}, n_modules={}'.format(
+            self.in_features, self.out_features, self.bias is not None,
+            self.n_modules
+        )
 
 
 class ModularCtrl(nn.Module):
@@ -79,50 +99,76 @@ class ModularCtrl(nn.Module):
                  dim,
                  n_modules,
                  n_active,
-                 sample_size=1,
-                 allow_repetition=True):
+                 ctrl_type):
         super().__init__()
         self.dim = dim
         self.n_modules = n_modules
         self.n_active = n_active
-        self.sample_size = sample_size
-        self.allow_repetition = allow_repetition
+        self.ctrl_type = ctrl_type
 
-        self.ctrl_proj = nn.Linear(dim, n_modules * n_active)
+        self.subsets = None
+        if ctrl_type == 'joint':
+            self.subsets = torch.combinations(
+                torch.tensor(range(n_modules)), n_active)
+            self.ctrl_proj = nn.Linear(dim, self.subsets.size(0))
+        elif ctrl_type == 'factored':
+            self.ctrl_proj = nn.Linear(dim, n_modules * n_active)
+        else:
+            raise ValueError('Invalid module controller type ({})'.format(ctrl_type))
 
         self.best_sel = None
 
-    def forward(self, x, mode='validation'):
+    def forward(self, x, mode, indices=None):
         batch_size = x.shape[0]
         x_flat = x.view(batch_size, -1, self.dim).sum(1)
 
         logits = self.ctrl_proj(x_flat)
-        logits = logits.view(-1, self.n_active, self.n_modules)
-        ctrl = distributions.categorical.Categorical(logits=logits)
+        if torch.isnan(x).any():
+            logger.warn('Controller input vector contains NaN')
+        if self.ctrl_type == 'factored':
+            logits = logits.view(-1, self.n_active, self.n_modules)
+        elif self.ctrl_type == 'joint':
+            logits = logits.unsqueeze(-2)
+        ctrl = Categorical(logits=logits)
 
-        if self.best_sel is None:
-            self.best_sel = torch.LongTensor(
-                batch_size,
-                self.n_active).random_(0, self.n_modules).to(x.device)
-
-        # batch_size x sample_size x subset_size
+        # batch_size x 1 x subset_size
         if mode == 'e_step':
-            selection = ctrl.sample([self.sample_size])[0].to(x.device)
+            selection = ctrl.sample([1])[0]
         elif mode == 'm_step':
-            selection = self.best_sel
+            assert indices is not None
+            selection = self.get_best_selection(indices)
         elif mode == 'validation':
-            selection = logits.max(-1)[1].view(-1, self.n_active)
+            selection = logits.max(-1)[1]
+            if self.ctrl_type == 'factored':
+                selection = selection.view(-1, self.n_active)
+        else:
+            raise ValueError('({}) Invalid mode'.format(self.__name__))
         selection = selection.to(x.device)
 
         return selection, ctrl
 
-    def update_best_selection(self, sel):
-        self.best_sel = sel
+    def sel2indices(self, selection):
+        if self.subsets is not None:
+            return self.subsets[selection].squeeze(1)
+        return selection
 
-    def reset_best_selection(self):
-        self.update_best_selection(None)
+    def initialize_best_selection(self, dataset_size):
+        if self.subsets is not None:
+            sel_size = self.subsets.size(0)
+            self.best_sel = torch.LongTensor(
+                dataset_size, 1).random_(0, sel_size)
+        else:
+            self.best_sel = torch.LongTensor(
+                dataset_size, self.n_active).random_(0, self.n_modules)
 
-#@with_incremental_state
+    def update_best_selection(self, sel, indices):
+        self.best_sel[indices] = sel.to(self.best_sel.device)
+
+    def get_best_selection(self, indices):
+        assert self.best_sel is not None
+        return self.best_sel[indices]
+
+
 class ModularMultiheadAttention(MultiheadAttention):
     """TODO"""
 
@@ -139,34 +185,46 @@ class ModularMultiheadAttention(MultiheadAttention):
         add_zero_attn=False,
         self_attention=False,
         encoder_decoder_attention=False,
-        sample_size=1
+        ctrl_type=None,
+        q_noise=0.0,
+        qn_block_size=8
     ):
         super().__init__(
             embed_dim,
             num_heads,
-            kdim=None,
-            vdim=None,
-            dropout=0.0,
-            bias=True,
-            add_bias_kv=False,
-            add_zero_attn=False,
-            self_attention=False,
-            encoder_decoder_attention=False)
-
+            kdim=kdim,
+            vdim=vdim,
+            dropout=dropout,
+            bias=bias,
+            add_bias_kv=add_bias_kv,
+            add_zero_attn=add_zero_attn,
+            self_attention=self_attention,
+            encoder_decoder_attention=encoder_decoder_attention,
+            q_noise=q_noise,
+            qn_block_size=qn_block_size)
         assert self.num_heads <= n_modules
 
-        self.k_proj = ModularLinear(
-            self.kdim, self.head_dim, n_modules, bias=bias)
-        self.v_proj = ModularLinear(
-            self.vdim, self.head_dim, n_modules, bias=bias)
-        self.q_proj = ModularLinear(
-            embed_dim, self.head_dim, n_modules, bias=bias)
+        if q_noise > 0.:
+            logger.warning('quant_noise modules are not properly supported (tested) at the moment')
+        self.k_proj = quant_noise(
+            ModularLinear(self.kdim, self.head_dim, n_modules, bias=bias),
+            q_noise, qn_block_size)
+        self.v_proj = quant_noise(
+            ModularLinear(self.vdim, self.head_dim, n_modules, bias=bias),
+            q_noise, qn_block_size)
+        self.q_proj = quant_noise(
+            ModularLinear(embed_dim, self.head_dim, n_modules, bias=bias),
+            q_noise, qn_block_size)
+           
+        self.out_proj = quant_noise(
+            ModularLinear(
+                self.head_dim, embed_dim, n_modules, bias=bias, concat_dim=1),
+            q_noise, qn_block_size)
 
-        self.out_proj = ModularLinear(
-            self.head_dim, embed_dim, n_modules, bias=bias, concat_dim=0)
-
-        self.module_ctrl = ModularCtrl(
-            embed_dim, n_modules, num_heads, sample_size)
+        self.module_ctrl = None
+        if ctrl_type is not None:
+            self.module_ctrl = ModularCtrl(
+                embed_dim, n_modules, num_heads, ctrl_type)
 
         self.enable_torch_version = False
         #TODO: support add_bias_kv
@@ -178,40 +236,30 @@ class ModularMultiheadAttention(MultiheadAttention):
         #else:
         self.bias_k = self.bias_v = None
 
-        self.reset_parameters()
+        self.reset_parameters_derived()
 
-    def reset_parameters(self):
-        if self.qkv_same_dim:
-            # Empirically observed the convergence to be much better with
-            # the scaled initialization
-            nn.init.xavier_uniform_(self.k_proj.weight, gain=1 / math.sqrt(2))
-            nn.init.xavier_uniform_(self.v_proj.weight, gain=1 / math.sqrt(2))
-            nn.init.xavier_uniform_(self.q_proj.weight, gain=1 / math.sqrt(2))
-        else:
-            nn.init.xavier_uniform_(self.k_proj.weight)
-            nn.init.xavier_uniform_(self.v_proj.weight)
-            nn.init.xavier_uniform_(self.q_proj.weight)
+    def reset_parameters_derived(self):
+        if self.module_ctrl is not None:
+            nn.init.xavier_uniform_(
+                self.module_ctrl.ctrl_proj.weight, gain=1 / math.sqrt(2))
 
-        nn.init.xavier_uniform_(self.out_proj.weight)
-        if self.out_proj.bias is not None:
-            nn.init.constant_(self.out_proj.bias, 0.)
-        if self.bias_k is not None:
-            nn.init.xavier_normal_(self.bias_k)
-        if self.bias_v is not None:
-            nn.init.xavier_normal_(self.bias_v)
+    def initialize_best_selection(self, dataset_size):
+        self.module_ctrl.initialize_best_selection(dataset_size)
 
-    def reset_best_selection(self):
-        self.module_ctrl.reset_best_selection()
+    def update_best_selection(self, sel, indices):
+        self.module_ctrl.update_best_selection(sel, indices)
 
-    def update_best_selection(self, sel):
-        self.module_ctrl.update_best_selection(sel)
+    def get_best_selection(self, indices):
+        return self.module_ctrl.get_best_selection(indices)
 
     def forward(
         self,
         query,
         key: Optional[Tensor],
         value: Optional[Tensor],
-        mode: str = "validation",
+        mode: str,
+        sel_indices = None,
+        indices: Optional[Tensor] = None,
         key_padding_mask: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         need_weights: bool = True,
@@ -220,22 +268,8 @@ class ModularMultiheadAttention(MultiheadAttention):
         before_softmax: bool = False,
         need_head_weights: bool = False,
     ) -> Tuple[Tensor, Optional[Tensor], Tensor, Tensor]:
-        """Input shape: Time x Batch x Channel
-
-        Args:
-            key_padding_mask (ByteTensor, optional): mask to exclude
-                keys that are pads, of shape `(batch, src_len)`, where
-                padding elements are indicated by 1s.
-            need_weights (bool, optional): return the attention weights,
-                averaged over heads (default: False).
-            attn_mask (ByteTensor, optional): typically used to
-                implement causal attention, where the mask prevents the
-                attention from looking forward in time (default: None).
-            before_softmax (bool, optional): return the raw attention
-                weights and values before the attention softmax.
-            need_head_weights (bool, optional): return the attention
-                weights for each head. Implies *need_weights*. Default:
-                return the average attention weights over all heads.
+        """
+        TODO: mode/indices description
         """
         if need_head_weights:
             need_weights = True
@@ -244,7 +278,16 @@ class ModularMultiheadAttention(MultiheadAttention):
         assert embed_dim == self.embed_dim
         assert list(query.size()) == [tgt_len, bsz, embed_dim]
 
-        selection, ctrl = self.module_ctrl(query.transpose(0, 1), mode)
+        selection = None
+        ctrl = None
+        if sel_indices is None:
+            selection, ctrl = self.module_ctrl(
+                query.transpose(0, 1), mode, indices)
+            sel_indices = self.module_ctrl.sel2indices(selection)
+        elif self.module_ctrl is not None:
+            logger.warn(
+                'forward method received sel_indices parameter although '
+                'it contains module_ctrl - ignoring module_ctrl')
 
         if (
             self.enable_torch_version
@@ -252,7 +295,7 @@ class ModularMultiheadAttention(MultiheadAttention):
             and incremental_state is None
             and not static_kv
         ):
-            raise ValueError("``enable_torch_version'' option is not supported")
+            raise ValueError('``enable_torch_version'' option is not supported')
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
@@ -266,23 +309,24 @@ class ModularMultiheadAttention(MultiheadAttention):
             saved_state = None
 
         if self.self_attention:
-            q = self.q_proj(query, selection)
-            k = self.k_proj(query, selection)
-            v = self.v_proj(query, selection)
+            q = self.q_proj(query, sel_indices)
+            k = self.k_proj(query, sel_indices)
+            v = self.v_proj(query, sel_indices)
         elif self.encoder_decoder_attention:
             # encoder-decoder attention
-            q = self.q_proj(query, selection)
+            q = self.q_proj(query, sel_indices)
             if key is None:
                 assert value is None
                 k = v = None
             else:
-                k = self.k_proj(key, selection)
-                v = self.v_proj(key, selection)
+                k = self.k_proj(key, sel_indices)
+                v = self.v_proj(key, sel_indices)
+
         else:
             assert key is not None and value is not None
-            q = self.q_proj(query, selection)
-            k = self.k_proj(key, selection)
-            v = self.v_proj(value, selection)
+            q = self.q_proj(query, sel_indices)
+            k = self.k_proj(key, sel_indices)
+            v = self.v_proj(value, sel_indices)
         q *= self.scaling
 
         if self.bias_k is not None:
@@ -408,9 +452,15 @@ class ModularMultiheadAttention(MultiheadAttention):
         if key_padding_mask is not None:
             # don't attend to padding symbols
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
-            attn_weights = attn_weights.masked_fill(
-                key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool), float("-inf")
-            )
+            if not self.tpu:
+                attn_weights = attn_weights.masked_fill(
+                    key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
+                    float("-inf")
+                )
+            else:
+                attn_weights = attn_weights.transpose(0, 2)
+                attn_weights = attn_weights.masked_fill(key_padding_mask, float('-inf'))
+                attn_weights = attn_weights.transpose(0, 2)
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         if before_softmax:
@@ -434,7 +484,7 @@ class ModularMultiheadAttention(MultiheadAttention):
             attn = attn.contiguous().view(tgt_len, bsz, embed_dim)
         else:
             attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
-        attn = self.out_proj(attn, selection)
+        attn = self.out_proj(attn, sel_indices)
         attn_weights: Optional[Tensor] = None
         if need_weights:
             attn_weights = attn_weights_float.view(
@@ -445,104 +495,3 @@ class ModularMultiheadAttention(MultiheadAttention):
                 attn_weights = attn_weights.mean(dim=0)
 
         return attn, attn_weights, selection, ctrl
-
-    @staticmethod
-    def _append_prev_key_padding_mask(
-        key_padding_mask: Optional[Tensor],
-        prev_key_padding_mask: Optional[Tensor],
-        batch_size: int,
-        src_len: int,
-        static_kv: bool,
-    ) -> Optional[Tensor]:
-        # saved key padding masks have shape (bsz, seq_len)
-        if prev_key_padding_mask is not None and static_kv:
-            new_key_padding_mask = prev_key_padding_mask
-        elif prev_key_padding_mask is not None and key_padding_mask is not None:
-            new_key_padding_mask = torch.cat(
-                [prev_key_padding_mask.float(), key_padding_mask.float()], dim=1
-            )
-        # During incremental decoding, as the padding token enters and
-        # leaves the frame, there will be a time when prev or current
-        # is None
-        elif prev_key_padding_mask is not None:
-
-            filler = torch.zeros(batch_size, src_len - prev_key_padding_mask.size(1))
-            if prev_key_padding_mask.is_cuda:
-                filler = filler.cuda()
-            new_key_padding_mask = torch.cat(
-                [prev_key_padding_mask.float(), filler.float()], dim=1
-            )
-        elif key_padding_mask is not None:
-            filler = torch.zeros(batch_size, src_len - key_padding_mask.size(1))
-            if key_padding_mask.is_cuda:
-                filler = filler.cuda()
-            new_key_padding_mask = torch.cat(
-                [filler.float(), key_padding_mask.float()], dim=1
-            )
-        else:
-            new_key_padding_mask = prev_key_padding_mask
-        return new_key_padding_mask
-
-    def reorder_incremental_state(
-        self, incremental_state: Dict[str, Dict[str, Optional[Tensor]]], new_order
-    ):
-        """Reorder buffered internal state (for incremental generation)."""
-        input_buffer = self._get_input_buffer(incremental_state)
-        if input_buffer is not None:
-            for k in input_buffer.keys():
-                input_buffer_k = input_buffer[k]
-                if input_buffer_k is not None:
-                    input_buffer[k] = input_buffer_k.index_select(0, new_order)
-            incremental_state = self._set_input_buffer(incremental_state, input_buffer)
-        return incremental_state
-
-    def _get_input_buffer(
-        self, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]]
-    ) -> Dict[str, Optional[Tensor]]:
-        result = self.get_incremental_state(incremental_state, "attn_state")
-        if result is not None:
-            return result
-        else:
-            empty_result: Dict[str, Optional[Tensor]] = {}
-            return empty_result
-
-    def _set_input_buffer(
-        self,
-        incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
-        buffer: Dict[str, Optional[Tensor]],
-    ):
-        return self.set_incremental_state(incremental_state, "attn_state", buffer)
-
-    def apply_sparse_mask(attn_weights, tgt_len: int, src_len: int, bsz: int):
-        return attn_weights
-
-    def upgrade_state_dict_named(self, state_dict, name):
-        prefix = name + "." if name != "" else ""
-        items_to_add = {}
-        keys_to_remove = []
-        for k in state_dict.keys():
-            if k.endswith(prefix + "in_proj_weight"):
-                # in_proj_weight used to be q + k + v with same dimensions
-                dim = int(state_dict[k].shape[0] / 3)
-                items_to_add[prefix + "q_proj.weight"] = state_dict[k][:dim]
-                items_to_add[prefix + "k_proj.weight"] = state_dict[k][dim : 2 * dim]
-                items_to_add[prefix + "v_proj.weight"] = state_dict[k][2 * dim :]
-
-                keys_to_remove.append(k)
-
-                k_bias = prefix + "in_proj_bias"
-                if k_bias in state_dict.keys():
-                    dim = int(state_dict[k].shape[0] / 3)
-                    items_to_add[prefix + "q_proj.bias"] = state_dict[k_bias][:dim]
-                    items_to_add[prefix + "k_proj.bias"] = state_dict[k_bias][
-                        dim : 2 * dim
-                    ]
-                    items_to_add[prefix + "v_proj.bias"] = state_dict[k_bias][2 * dim :]
-
-                    keys_to_remove.append(prefix + "in_proj_bias")
-
-        for k in keys_to_remove:
-            del state_dict[k]
-
-        for key, value in items_to_add.items():
-            state_dict[key] = value

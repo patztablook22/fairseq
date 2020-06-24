@@ -201,6 +201,7 @@ class TransformerEncoderLayerBase(nn.Module):
             key_padding_mask=encoder_padding_mask,
             need_weights=False,
             attn_mask=attn_mask,
+            need_head_weights=need_head_weights
         )
         x = self.dropout_module(x)
         x = self.residual_connection(x, residual)
