@@ -107,12 +107,8 @@ def main(args, init_distributed=False):
         xm.rendezvous('load_checkpoint')  # wait for all workers
         xm.mark_step()
 
-    # NOTE: Ugly hack to initialize modular layer controller for training
-    if args.arch == 'transformer_modular_v2':
-        model.initialize_best_selection(len(task.datasets['train']))
-
     # NOTE: Ugly hack to initialize modular attention controller for training
-    if args.arch == 'transformer_modular_v2':
+    if args.arch == 'transformer_modular':
         model.initialize_best_selection(len(task.datasets['train']))
 
     # Train until the learning rate gets too small
@@ -187,6 +183,7 @@ def train(args, trainer, task, epoch_itr, max_update=math.inf):
         fix_batches_to_gpus=args.fix_batches_to_gpus,
         shuffle=(epoch_itr.next_epoch_idx > args.curriculum),
     )
+
     update_freq = (
         args.update_freq[epoch_itr.epoch - 1]
         if epoch_itr.epoch <= len(args.update_freq)

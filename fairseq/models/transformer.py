@@ -271,7 +271,7 @@ class TransformerModel(FairseqEncoderDecoderModel):
             src_lengths=src_lengths,
             return_all_hiddens=return_all_hiddens,
         )
-        decoder_out = self.decoder(
+        x, extra = self.decoder(
             prev_output_tokens,
             encoder_out=encoder_out,
             features_only=features_only,
@@ -280,7 +280,8 @@ class TransformerModel(FairseqEncoderDecoderModel):
             src_lengths=src_lengths,
             return_all_hiddens=return_all_hiddens,
         )
-        return decoder_out
+        extra["enc_self_attn_weights"] = encoder_out.enc_self_attn_weights
+        return x, extra
 
     # Since get_normalized_probs is in the Fairseq Model which is not scriptable,
     # I rewrite the get_normalized_probs from Base Class to call the
@@ -412,10 +413,12 @@ class TransformerEncoder(FairseqEncoder):
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
 
         encoder_states = [] if return_all_hiddens else None
+        attn_weights = []
 
         # encoder layers
         for layer in self.layers:
-            x = layer(x, encoder_padding_mask)
+            x, attn_w = layer(x, encoder_padding_mask, need_head_weights=True)
+            attn_weights.append(attn_w)
             if return_all_hiddens:
                 assert encoder_states is not None
                 encoder_states.append(x)
@@ -428,6 +431,7 @@ class TransformerEncoder(FairseqEncoder):
             encoder_padding_mask=encoder_padding_mask,  # B x T
             encoder_embedding=encoder_embedding,  # B x T x C
             encoder_states=encoder_states,  # List[T x B x C]
+            enc_self_attn_weights=attn_weights,
             src_tokens=None,
             src_lengths=None,
         )
@@ -474,11 +478,13 @@ class TransformerEncoder(FairseqEncoder):
             for idx, state in enumerate(encoder_states):
                 encoder_states[idx] = state.index_select(1, new_order)
 
+        # TODO: Should we also reorder attn_weights?
         return EncoderOut(
             encoder_out=new_encoder_out["encoder_out"],  # T x B x C
             encoder_padding_mask=new_encoder_out["encoder_padding_mask"],  # B x T
             encoder_embedding=new_encoder_out["encoder_embedding"],  # B x T x C
             encoder_states=encoder_states,  # List[T x B x C]
+            enc_self_attn_weights=encoder_out.enc_self_attn_weights,
             src_tokens=src_tokens,  # B x T
             src_lengths=src_lengths,  # B x 1
         )

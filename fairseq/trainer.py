@@ -426,6 +426,10 @@ class Trainer(object):
                     )
                     ooms += 1
                     self.zero_grad()
+                    logger.warning(
+                        "skipping current batch due to OOM"
+                    )
+                    return {}
                 else:
                     raise e
 
@@ -502,6 +506,8 @@ class Trainer(object):
                 self._log_oom(e)
                 logger.error("OOM during optimization, irrecoverable")
             raise e
+        except:
+            import pdb; pdb.set_trace()
 
         # Some distributed wrappers (e.g., SlowMo) need access to the optimizer after the step
         if hasattr(self.model, 'perform_additional_optimizer_actions'):

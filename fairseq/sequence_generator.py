@@ -445,6 +445,17 @@ class SequenceGenerator(nn.Module):
                 List[Dict[str, Tensor]], [x.elem for x in BCList]
             )
 
+        bsz = input_size[0]
+        if hasattr(encoder_outs[0], 'enc_self_attn_weights'):
+            for i in range(bsz):
+                enc_self_attn_conf = ";".join([
+                    ":".join([
+                        ",".join(attn_weights[:, i].max(-1).values.mean(-1).cpu().numpy().astype(np.str))
+                        for attn_weights in o.enc_self_attn_weights])
+                    for o in encoder_outs])
+                for j, _ in enumerate(finalized[i]):
+                    finalized[i][j]['enc_self_attn_conf'] = enc_self_attn_conf
+
         return finalized
 
     def _prefix_tokens(
@@ -877,26 +888,26 @@ class SequenceGeneratorWithAlignment(SequenceGenerator):
 
 class SequenceGeneratorWithSelection(SequenceGenerator):
 
-    def __init__(self, tgt_dict, **kwargs):
+    def __init__(self, models, tgt_dict, **kwargs):
         """Generates translations of a given source sentence.
 
         Produces module selections chosen by the modular layers in the model.
 
         TODO - finish the docstring
         """
-        super().__init__(tgt_dict, **kwargs)
+        super().__init__(EnsembleModel(models), tgt_dict, **kwargs)
 
     @torch.no_grad()
     def generate(self, models, sample, **kwargs):
-        model = EnsembleModel(models)
-        finalized = self._generate(model, sample, **kwargs)
+        self.model.reset_incremental_state()
+        finalized = super()._generate(sample, **kwargs)
 
         encoder_input = {
             k: v for k, v in sample['net_input'].items()
             if k != 'prev_output_tokens'
         }
         bsz = encoder_input['src_tokens'].size(0)
-        encoder_outs = model.forward_encoder(encoder_input)
+        encoder_outs = self.model.forward_encoder(encoder_input)
         if hasattr(encoder_outs[0], 'selections'):
             for i in range(bsz):
                 selections = ";".join([

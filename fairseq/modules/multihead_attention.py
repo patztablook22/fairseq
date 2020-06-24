@@ -148,6 +148,9 @@ class MultiheadAttention(nn.Module):
             # A workaround for quantization to work. Otherwise JIT compilation
             # treats bias in linear module as method.
             and not torch.jit.is_scripting()
+            # HACK to use the fairseq multihead attention implementation
+            # (due to pytorch only returning mean att.weights over the heads)
+            and False
         ):
             assert key is not None and value is not None
             return F.multi_head_attention_forward(
