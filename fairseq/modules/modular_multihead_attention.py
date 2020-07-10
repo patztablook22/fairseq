@@ -32,13 +32,12 @@ class ModularLinear(nn.Module):
                  out_features,
                  n_modules,
                  bias=False,
-                 concat_dim=0):
+                 sum_outputs=False):
         super(ModularLinear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.n_modules = n_modules
-        self.concat_dim = concat_dim
-        assert concat_dim in [0, 1]
+        self.sum_outputs = sum_outputs
 
         self.weight = Parameter(torch.Tensor(
             n_modules, out_features, in_features))
@@ -59,27 +58,92 @@ class ModularLinear(nn.Module):
                     init.uniform_(self.bias[i], -bound, bound)
 
     def forward(self, x, selection, time_major=True):
+        # TODO: separate forward and forward_v2 methods and do proper profiling
+        # The question is: is one of the methods clearly superior or should we choose
+        # based on a criterion (e.g. number of unique selections) for speedup
+        # Another question: What is more efficient in pytorch - slicing or matmul?
+
         assert selection.dim() == 2
+
+        selection_unique = torch.unique(selection, dim=0)
+        if selection_unique.numel() > self.n_modules:
+            return self.forward_v2(x, selection, time_major=True)
 
         if time_major:
             x = x.transpose(0, 1)
 
-        outputs = []
-        for i in range(selection.size(0)):
-            sel = selection[i]
+        outputs = None
+        for i in range(selection_unique.size(0)):
+            sel = selection_unique[i]
             assert sel.max() < self.n_modules
 
-            w = torch.cat([self.weight[k] for k in sel], self.concat_dim)
+            mask = selection.eq(sel).min(-1).values.float()
+            mask = mask.view(-1, 1, 1).to(x.device)
+
+            w = self.weight[sel]
+            if self.sum_outputs:
+                w = torch.cat([k for k in w], axis=-1)
+            else:
+                w = w.view(-1, self.weight.size(-1))
+
             b = self.bias
             if b is not None:
-                if self.concat_dim == 1:
-                    b = self.bias[sel].sum(0).view(-1)
-                else:
-                    b = self.bias[sel].view(-1)
-            o = F.linear(x[i], w, b)
-            outputs.append(o)
+                b = self.bias[sel]
+                if self.sum_outputs:
+                    b = b.sum(0)
+                b = b.view(-1)
 
-        outputs = torch.stack(outputs, dim=0)
+            o = F.linear(x, w, b)
+            o *= mask
+            if outputs is None:
+                outputs = o
+            else:
+                outputs += o
+
+        if time_major:
+            outputs = outputs.transpose(0, 1)
+
+        return outputs
+
+    def forward_v2(self, x, selection, time_major=True):
+        if time_major:
+            x = x.transpose(0, 1)
+
+        selection_unique = torch.unique(selection)
+        if self.sum_outputs:
+            x = x.view(x.size(0), x.size(1), selection.size(1), self.in_features)
+
+            # TODO: can we do this with a single matrix multiplication?
+            outputs = None
+            for i in selection_unique:
+                mask = selection.eq(i).to(x.device)
+                mask = mask.unsqueeze(1).unsqueeze(-1)
+
+                b = None
+                if self.bias is not None:
+                    b = self.bias[i]
+                o = F.linear(x, self.weight[i], b)
+                o *= mask
+
+                if outputs is None:
+                    outputs = o
+                else:
+                    outputs += o
+            outputs = outputs.sum(2)
+        else:
+            w = self.weight.view(-1, self.weight.size(-1))
+            b = None
+            if self.bias is not None:
+                b = self.bias.view(-1)
+            o = F.linear(x, w, b)
+
+            o = o.view(o.size(0), o.size(1), self.n_modules, self.out_features)
+            o = o.transpose(1, 2)
+            outputs = [
+                o[[[k for k in range(selection.size(0))], selection[:, i]]]
+                for i in range(selection.size(1))]
+            outputs = torch.cat(outputs, -1)
+
         if time_major:
             outputs = outputs.transpose(0, 1)
 
@@ -218,7 +282,7 @@ class ModularMultiheadAttention(MultiheadAttention):
            
         self.out_proj = quant_noise(
             ModularLinear(
-                self.head_dim, embed_dim, n_modules, bias=bias, concat_dim=1),
+                self.head_dim, embed_dim, n_modules, bias=bias, sum_outputs=True),
             q_noise, qn_block_size)
 
         self.module_ctrl = None
