@@ -35,7 +35,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         return ModularMultiheadAttention(
             embed_dim,
             args.encoder_attention_heads,
-            args.encoder_attention_heads_pool,
+            args.encoder_attention_heads_active,
             dropout=args.attention_dropout,
             self_attention=True,
             ctrl_type=ctrl_type,

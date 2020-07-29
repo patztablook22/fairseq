@@ -6,6 +6,7 @@
 import math
 from typing import Dict, Optional, Tuple
 import logging
+import itertools
 
 import torch
 import torch.nn.init as init
@@ -42,36 +43,33 @@ class ModularLinear(nn.Module):
         self.weight = Parameter(torch.Tensor(
             n_modules, out_features, in_features))
         if bias:
-            self.bias = Parameter(torch.Tensor(n_modules, out_features))
+            if sum_outputs:
+                # Output projection has a single shared bias
+                self.bias = Parameter(torch.Tensor(1, out_features))
+            else:
+                self.bias = Parameter(torch.Tensor(n_modules, out_features))
         else:
             self.register_parameter('bias', None)
         self.reset_parameters()
 
     def reset_parameters(self):
         with torch.no_grad():
-            for i in range(self.n_modules):
-                init.kaiming_uniform_(self.weight[i], a=math.sqrt(5))
-                if self.bias is not None:
-                    fan_in, _ = init._calculate_fan_in_and_fan_out(
-                        self.weight[i])
-                    bound = 1 / math.sqrt(fan_in)
-                    init.uniform_(self.bias[i], -bound, bound)
+            init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+            if self.bias is not None:
+                fan_in, _ = init._calculate_fan_in_and_fan_out(
+                    self.weight)
+                bound = 1 / math.sqrt(fan_in)
+            init.uniform_(self.bias, -bound, bound)
 
-    def forward(self, x, selection, time_major=True):
-        # TODO: separate forward and forward_v2 methods and do proper profiling
-        # The question is: is one of the methods clearly superior or should we choose
-        # based on a criterion (e.g. number of unique selections) for speedup
-        # Another question: What is more efficient in pytorch - slicing or matmul?
-
+    def forward_alt(self, x, selection, time_major=True):
+        # Alternative version of the forward method.
+        # Performance-wise, this version seems inferior to the current forward method.
         assert selection.dim() == 2
-
-        selection_unique = torch.unique(selection, dim=0)
-        if selection_unique.numel() > self.n_modules:
-            return self.forward_v2(x, selection, time_major=True)
 
         if time_major:
             x = x.transpose(0, 1)
 
+        selection_unique = torch.unique(selection, dim=0)
         outputs = None
         for i in range(selection_unique.size(0)):
             sel = selection_unique[i]
@@ -105,7 +103,9 @@ class ModularLinear(nn.Module):
 
         return outputs
 
-    def forward_v2(self, x, selection, time_major=True):
+    def forward(self, x, selection, time_major=True):
+        assert selection.dim() == 2
+
         if time_major:
             x = x.transpose(0, 1)
 
@@ -119,10 +119,7 @@ class ModularLinear(nn.Module):
                 mask = selection.eq(i).to(x.device)
                 mask = mask.unsqueeze(1).unsqueeze(-1)
 
-                b = None
-                if self.bias is not None:
-                    b = self.bias[i]
-                o = F.linear(x, self.weight[i], b)
+                o = F.linear(x, self.weight[i], None)
                 o *= mask
 
                 if outputs is None:
@@ -130,6 +127,8 @@ class ModularLinear(nn.Module):
                 else:
                     outputs += o
             outputs = outputs.sum(2)
+            if self.bias is not None:
+                outputs += self.bias
         else:
             w = self.weight.view(-1, self.weight.size(-1))
             b = None
@@ -172,8 +171,8 @@ class ModularCtrl(nn.Module):
 
         self.subsets = None
         if ctrl_type == 'joint':
-            self.subsets = torch.combinations(
-                torch.tensor(range(n_modules)), n_active)
+            self.subsets = list(itertools.combinations(range(n_modules), n_active))
+            self.subsets = torch.tensor(self.subsets, dtype=torch.long)
             self.ctrl_proj = nn.Linear(dim, self.subsets.size(0))
         elif ctrl_type == 'factored':
             self.ctrl_proj = nn.Linear(dim, n_modules * n_active)
@@ -240,7 +239,7 @@ class ModularMultiheadAttention(MultiheadAttention):
         self,
         embed_dim,
         num_heads,
-        n_modules,
+        num_heads_active,
         kdim=None,
         vdim=None,
         dropout=0.0,
@@ -266,29 +265,30 @@ class ModularMultiheadAttention(MultiheadAttention):
             encoder_decoder_attention=encoder_decoder_attention,
             q_noise=q_noise,
             qn_block_size=qn_block_size)
-        assert self.num_heads <= n_modules
+        assert num_heads_active <= self.num_heads
+        self.num_heads_active = num_heads_active
 
         if q_noise > 0.:
             logger.warning('quant_noise modules are not properly supported (tested) at the moment')
         self.k_proj = quant_noise(
-            ModularLinear(self.kdim, self.head_dim, n_modules, bias=bias),
+            ModularLinear(self.kdim, self.head_dim, self.num_heads, bias=bias),
             q_noise, qn_block_size)
         self.v_proj = quant_noise(
-            ModularLinear(self.vdim, self.head_dim, n_modules, bias=bias),
+            ModularLinear(self.vdim, self.head_dim, self.num_heads, bias=bias),
             q_noise, qn_block_size)
         self.q_proj = quant_noise(
-            ModularLinear(embed_dim, self.head_dim, n_modules, bias=bias),
+            ModularLinear(embed_dim, self.head_dim, self.num_heads, bias=bias),
             q_noise, qn_block_size)
            
         self.out_proj = quant_noise(
             ModularLinear(
-                self.head_dim, embed_dim, n_modules, bias=bias, sum_outputs=True),
+                self.head_dim, embed_dim, self.num_heads, bias=bias, sum_outputs=True),
             q_noise, qn_block_size)
 
         self.module_ctrl = None
         if ctrl_type is not None:
             self.module_ctrl = ModularCtrl(
-                embed_dim, n_modules, num_heads, ctrl_type)
+                embed_dim, self.num_heads, self.num_heads_active, ctrl_type)
 
         self.enable_torch_version = False
         #TODO: support add_bias_kv
@@ -413,19 +413,19 @@ class ModularMultiheadAttention(MultiheadAttention):
 
         q = (
             q.contiguous()
-            .view(tgt_len, bsz * self.num_heads, self.head_dim)
+            .view(tgt_len, bsz * self.num_heads_active, self.head_dim)
             .transpose(0, 1)
         )
         if k is not None:
             k = (
                 k.contiguous()
-                .view(-1, bsz * self.num_heads, self.head_dim)
+                .view(-1, bsz * self.num_heads_active, self.head_dim)
                 .transpose(0, 1)
             )
         if v is not None:
             v = (
                 v.contiguous()
-                .view(-1, bsz * self.num_heads, self.head_dim)
+                .view(-1, bsz * self.num_heads_active, self.head_dim)
                 .transpose(0, 1)
             )
 
@@ -436,7 +436,7 @@ class ModularMultiheadAttention(MultiheadAttention):
             if "prev_key" in saved_state:
                 _prev_key = saved_state["prev_key"]
                 assert _prev_key is not None
-                prev_key = _prev_key.view(bsz * self.num_heads, -1, self.head_dim)
+                prev_key = _prev_key.view(bsz * self.num_heads_active, -1, self.head_dim)
                 if static_kv:
                     k = prev_key
                 else:
@@ -445,7 +445,7 @@ class ModularMultiheadAttention(MultiheadAttention):
             if "prev_value" in saved_state:
                 _prev_value = saved_state["prev_value"]
                 assert _prev_value is not None
-                prev_value = _prev_value.view(bsz * self.num_heads, -1, self.head_dim)
+                prev_value = _prev_value.view(bsz * self.num_heads_active, -1, self.head_dim)
                 if static_kv:
                     v = prev_value
                 else:
@@ -463,8 +463,8 @@ class ModularMultiheadAttention(MultiheadAttention):
                 static_kv=static_kv,
             )
 
-            saved_state["prev_key"] = k.view(bsz, self.num_heads, -1, self.head_dim)
-            saved_state["prev_value"] = v.view(bsz, self.num_heads, -1, self.head_dim)
+            saved_state["prev_key"] = k.view(bsz, self.num_heads_active, -1, self.head_dim)
+            saved_state["prev_value"] = v.view(bsz, self.num_heads_active, -1, self.head_dim)
             saved_state["prev_key_padding_mask"] = key_padding_mask
             # In this branch incremental_state is never None
             assert incremental_state is not None
@@ -505,7 +505,7 @@ class ModularMultiheadAttention(MultiheadAttention):
         attn_weights = ModularMultiheadAttention.apply_sparse_mask(
             attn_weights, tgt_len, src_len, bsz)
 
-        assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
+        assert list(attn_weights.size()) == [bsz * self.num_heads_active, tgt_len, src_len]
 
         if attn_mask is not None:
             attn_mask = attn_mask.unsqueeze(0)
@@ -515,7 +515,7 @@ class ModularMultiheadAttention(MultiheadAttention):
 
         if key_padding_mask is not None:
             # don't attend to padding symbols
-            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.view(bsz, self.num_heads_active, tgt_len, src_len)
             if not self.tpu:
                 attn_weights = attn_weights.masked_fill(
                     key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
@@ -525,7 +525,7 @@ class ModularMultiheadAttention(MultiheadAttention):
                 attn_weights = attn_weights.transpose(0, 2)
                 attn_weights = attn_weights.masked_fill(key_padding_mask, float('-inf'))
                 attn_weights = attn_weights.transpose(0, 2)
-            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+            attn_weights = attn_weights.view(bsz * self.num_heads_active, tgt_len, src_len)
 
         if before_softmax:
             return attn_weights, v, selection, ctrl
@@ -541,18 +541,18 @@ class ModularMultiheadAttention(MultiheadAttention):
         )
         assert v is not None
         attn = torch.bmm(attn_probs, v)
-        assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
+        assert list(attn.size()) == [bsz * self.num_heads_active, tgt_len, self.head_dim]
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)
             # the transpose is a no-op copy before view, thus unnecessary
-            attn = attn.contiguous().view(tgt_len, bsz, embed_dim)
+            attn = attn.contiguous().view(tgt_len, bsz, self.head_dim * self.num_heads_active)
         else:
-            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
+            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, self.head_dim * self.num_heads_active)
         attn = self.out_proj(attn, sel_indices)
         attn_weights: Optional[Tensor] = None
         if need_weights:
             attn_weights = attn_weights_float.view(
-                bsz, self.num_heads, tgt_len, src_len
+                bsz, self.num_heads_active, tgt_len, src_len
             ).transpose(1, 0)
             if not need_head_weights:
                 # average attention weights over heads

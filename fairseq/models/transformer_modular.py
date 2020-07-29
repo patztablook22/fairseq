@@ -60,12 +60,12 @@ class TransformerModularModel(TransformerModel):
         """Add model-specific arguments to the parser."""
         # fmt: off
         super(TransformerModularModel, TransformerModularModel).add_args(parser)
-        parser.add_argument('--encoder-attention-heads-pool', type=int,
+        parser.add_argument('--encoder-attention-heads-active', type=int,
                             metavar='N',
                             help='size of the attention head pool')
-        parser.add_argument('--encoder-modular-layer-indices', default=None,
+        parser.add_argument('--encoder-modular-layer-indices',
                             help='tuple of indices of modular layers')
-        parser.add_argument('--module-ctrl-type', type=str, default="joint-separate",
+        parser.add_argument('--module-ctrl-type', type=str,
                             help='type of the module controller')
         # fmt: on
 
@@ -204,12 +204,12 @@ class TransformerModularEncoder(TransformerEncoder):
         self.module_ctrl = None
         if args.module_ctrl_type == 'joint-shared':
             self.module_ctrl = ModularCtrl(
-                args.encoder_embed_dim, args.encoder_attention_heads_pool,
-                args.encoder_attention_heads, 'joint')
+                args.encoder_embed_dim, args.encoder_attention_heads,
+                args.encoder_attention_heads_active, 'joint')
         elif args.module_ctrl_type == 'factored-shared':
             self.module_ctrl = ModularCtrl(
-                args.encoder_embed_dim, args.encoder_attention_heads_pool,
-                args.encoder_attention_heads, 'factored')
+                args.encoder_embed_dim, args.encoder_attention_heads,
+                args.encoder_attention_heads_active, 'factored')
 
         if self.encoder_layerdrop > 0.0:
             self.layers = LayerDropModuleList(p=self.encoder_layerdrop)
@@ -344,9 +344,10 @@ class TransformerModularEncoder(TransformerEncoder):
 
 @register_model_architecture("transformer_modular", "transformer_modular")
 def transformer_modular(args):
-    args.encoder_attention_heads_pool = getattr(
-        args, 'encoder_attention_heads_pool', 2 * args.encoder_attention_heads)
-    args.encoder_modular_layer = getattr(args, 'encoder_modular_layer_indices', '(0)')
-    args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'joint-separate')
+    args.encoder_attention_heads_active = getattr(
+        args, 'encoder_attention_heads_active', args.encoder_attention_heads)
+    args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'joint-shared')
+    args.encoder_modular_layer_indices = getattr(
+        args, 'encoder_modular_layer_indices', '()')
 
     transformer.base_architecture(args)
