@@ -329,10 +329,16 @@ def _main(cfg: DictConfig, output_file):
                         )
 
                     if cfg.generation.print_selection:
-                        print(
-                            'M-{}\t{}'.format(sample_id, hypo['selections']),
-                            file=output_file
-                        )
+                        if 'enc_selection' in hypo:
+                            print(
+                                'Menc-{}\t{}'.format(sample_id, hypo['enc_selection']),
+                                file=output_file
+                            )
+                        if 'dec_selection' in hypo:
+                            print(
+                                'Mdec-{}\t{}'.format(sample_id, hypo['dec_selection']),
+                                file=output_file
+                            )
 
                     if cfg.generation.retain_iter_history:
                         for step, h in enumerate(hypo["history"]):

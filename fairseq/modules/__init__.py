@@ -31,7 +31,11 @@ from .linearized_convolution import LinearizedConvolution
 from .location_attention import LocationAttention
 from .lstm_cell_with_zoneout import LSTMCellWithZoneOut
 from .multihead_attention import MultiheadAttention
-from .modular_multihead_attention import ModularCtrl, ModularMultiheadAttention
+from .modular_multihead_attention import (
+    ModularCtrl,
+    ModularCtrlOut,
+    ModularMultiheadAttention
+)
 from .positional_embedding import PositionalEmbedding
 from .same_pad import SamePad, SamePad2d
 from .scalar_bias import ScalarBias
@@ -41,7 +45,10 @@ from .transformer_sentence_encoder import TransformerSentenceEncoder
 from .transpose_last import TransposeLast
 from .unfold import unfold1d
 from .transformer_layer import TransformerDecoderLayer, TransformerEncoderLayer
-from .transformer_modular_layer import TransformerModularEncoderLayer
+from .transformer_modular_layer import (
+    TransformerModularEncoderLayer,
+    TransformerModularDecoderLayer
+)
 from .vggblock import VGGBlock
 from .espnet_multihead_attention import (
     ESPNETMultiHeadedAttention,
@@ -99,6 +106,7 @@ __all__ = [
     "TransformerDecoderLayer",
     "TransformerEncoderLayer",
     'TransformerModularEncoderLayer',
+    'TransformerModularDecoderLayer',
     "TransposeLast",
     "VGGBlock",
     "unfold1d",

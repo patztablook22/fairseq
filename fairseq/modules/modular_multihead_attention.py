@@ -4,7 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
-from typing import Dict, Optional, Tuple
+from typing import Dict, NamedTuple, Optional, Tuple
 import logging
 import itertools
 
@@ -155,6 +155,16 @@ class ModularLinear(nn.Module):
         )
 
 
+ModularCtrlOut = NamedTuple(
+    "ModularCtrlOut",
+    [
+        ("ctrl", Tensor),  # Categorical
+        ("selection", Tensor),  # B x n_active
+        ("ctrl_prediction", Optional[Tensor]),
+    ]
+)
+
+
 class ModularCtrl(nn.Module):
     """TODO"""
 
@@ -162,7 +172,7 @@ class ModularCtrl(nn.Module):
                  dim,
                  n_modules,
                  n_active,
-                 ctrl_type):
+                 ctrl_type='joint'):
         super().__init__()
         self.dim = dim
         self.n_modules = n_modules
@@ -173,21 +183,28 @@ class ModularCtrl(nn.Module):
         if ctrl_type == 'joint':
             self.subsets = list(itertools.combinations(range(n_modules), n_active))
             self.subsets = torch.tensor(self.subsets, dtype=torch.long)
-            self.ctrl_proj = nn.Linear(dim, self.subsets.size(0))
+            self.out_proj = nn.Linear(dim, self.subsets.size(0))
         elif ctrl_type == 'factored':
-            self.ctrl_proj = nn.Linear(dim, n_modules * n_active)
+            self.out_proj = nn.Linear(dim, n_modules * n_active)
         else:
             raise ValueError('Invalid module controller type ({})'.format(ctrl_type))
 
-        self.best_sel = None
+        self.best_prediction = None
+        self.reset_parameters()
 
-    def forward(self, x, mode, indices=None):
+    def forward(self, x, mode, padding_mask=None, indices=None):
         batch_size = x.shape[0]
-        x_flat = x.view(batch_size, -1, self.dim).sum(1)
+        x_flat = x.view(batch_size, -1, self.dim)
+        if padding_mask is not None:
+            # The mask contains '1' in place of the padding symbols
+            mask = (~padding_mask).long()
+            mask_flat = mask.view(batch_size, -1, 1)
+            x_flat *= mask_flat
+        x_flat = x_flat.sum(1)
 
-        logits = self.ctrl_proj(x_flat)
-        if torch.isnan(x).any():
-            logger.warn('Controller input vector contains NaN')
+        logits = self.out_proj(x_flat)
+        #if torch.isnan(x).any():
+        #    logger.warn('Controller input vector contains NaN')
         if self.ctrl_type == 'factored':
             logits = logits.view(-1, self.n_active, self.n_modules)
         elif self.ctrl_type == 'joint':
@@ -196,41 +213,48 @@ class ModularCtrl(nn.Module):
 
         # batch_size x 1 x subset_size
         if mode == 'e_step':
-            selection = ctrl.sample([1])[0]
+            ctrl_prediction = ctrl.sample([1])[0]
         elif mode == 'm_step':
             assert indices is not None
-            selection = self.get_best_selection(indices)
+            ctrl_prediction = self.get_best_prediction(indices)
         elif mode == 'validation':
-            selection = logits.max(-1)[1]
-            if self.ctrl_type == 'factored':
-                selection = selection.view(-1, self.n_active)
+            ctrl_prediction = logits.max(-1)[1]
         else:
-            raise ValueError('({}) Invalid mode'.format(self.__name__))
-        selection = selection.to(x.device)
+            raise ValueError('Invalid ModuleCtrl mode: {}'.format(mode))
 
-        return selection, ctrl
+        ctrl_prediction = ctrl_prediction.to(x.device)
+        selection = self.pred2sel(ctrl_prediction)
 
-    def sel2indices(self, selection):
+        return ModularCtrlOut(
+            ctrl=ctrl,
+            selection=selection,
+            ctrl_prediction=ctrl_prediction,
+        )
+
+    def pred2sel(self, prediction):
         if self.subsets is not None:
-            return self.subsets[selection].squeeze(1)
-        return selection
+            return self.subsets[prediction].squeeze(1)
+        return prediction
 
-    def initialize_best_selection(self, dataset_size):
+    def initialize_best_prediction(self, dataset_size):
         if self.subsets is not None:
             sel_size = self.subsets.size(0)
-            self.best_sel = torch.LongTensor(
+            self.best_prediction = torch.LongTensor(
                 dataset_size, 1).random_(0, sel_size)
         else:
-            self.best_sel = torch.LongTensor(
+            self.best_prediction = torch.LongTensor(
                 dataset_size, self.n_active).random_(0, self.n_modules)
 
-    def update_best_selection(self, sel, indices):
-        self.best_sel[indices] = sel.to(self.best_sel.device)
+    def update_best_prediction(self, sel, indices):
+        self.best_prediction[indices] = sel.to(self.best_prediction.device)
 
-    def get_best_selection(self, indices):
-        assert self.best_sel is not None
-        return self.best_sel[indices]
+    def get_best_prediction(self, indices):
+        assert self.best_prediction is not None
+        return self.best_prediction[indices]
 
+    def reset_parameters(self):
+        nn.init.xavier_uniform_(
+            self.out_proj.weight, gain=1 / math.sqrt(2))
 
 class ModularMultiheadAttention(MultiheadAttention):
     """TODO"""
@@ -248,7 +272,6 @@ class ModularMultiheadAttention(MultiheadAttention):
         add_zero_attn=False,
         self_attention=False,
         encoder_decoder_attention=False,
-        ctrl_type=None,
         q_noise=0.0,
         qn_block_size=8
     ):
@@ -285,11 +308,6 @@ class ModularMultiheadAttention(MultiheadAttention):
                 self.head_dim, embed_dim, self.num_heads, bias=bias, sum_outputs=True),
             q_noise, qn_block_size)
 
-        self.module_ctrl = None
-        if ctrl_type is not None:
-            self.module_ctrl = ModularCtrl(
-                embed_dim, self.num_heads, self.num_heads_active, ctrl_type)
-
         self.enable_torch_version = False
         #TODO: support add_bias_kv
         #if add_bias_kv:
@@ -300,30 +318,12 @@ class ModularMultiheadAttention(MultiheadAttention):
         #else:
         self.bias_k = self.bias_v = None
 
-        self.reset_parameters_derived()
-
-    def reset_parameters_derived(self):
-        if self.module_ctrl is not None:
-            nn.init.xavier_uniform_(
-                self.module_ctrl.ctrl_proj.weight, gain=1 / math.sqrt(2))
-
-    def initialize_best_selection(self, dataset_size):
-        self.module_ctrl.initialize_best_selection(dataset_size)
-
-    def update_best_selection(self, sel, indices):
-        self.module_ctrl.update_best_selection(sel, indices)
-
-    def get_best_selection(self, indices):
-        return self.module_ctrl.get_best_selection(indices)
-
     def forward(
         self,
         query,
         key: Optional[Tensor],
         value: Optional[Tensor],
-        mode: str,
-        sel_indices = None,
-        indices: Optional[Tensor] = None,
+        selection: Tensor,
         key_padding_mask: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         need_weights: bool = True,
@@ -341,17 +341,6 @@ class ModularMultiheadAttention(MultiheadAttention):
         tgt_len, bsz, embed_dim = query.size()
         assert embed_dim == self.embed_dim
         assert list(query.size()) == [tgt_len, bsz, embed_dim]
-
-        selection = None
-        ctrl = None
-        if sel_indices is None:
-            selection, ctrl = self.module_ctrl(
-                query.transpose(0, 1), mode, indices)
-            sel_indices = self.module_ctrl.sel2indices(selection)
-        elif self.module_ctrl is not None:
-            logger.warn(
-                'forward method received sel_indices parameter although '
-                'it contains module_ctrl - ignoring module_ctrl')
 
         if (
             self.enable_torch_version
@@ -373,24 +362,24 @@ class ModularMultiheadAttention(MultiheadAttention):
             saved_state = None
 
         if self.self_attention:
-            q = self.q_proj(query, sel_indices)
-            k = self.k_proj(query, sel_indices)
-            v = self.v_proj(query, sel_indices)
+            q = self.q_proj(query, selection)
+            k = self.k_proj(query, selection)
+            v = self.v_proj(query, selection)
         elif self.encoder_decoder_attention:
             # encoder-decoder attention
-            q = self.q_proj(query, sel_indices)
+            q = self.q_proj(query, selection)
             if key is None:
                 assert value is None
                 k = v = None
             else:
-                k = self.k_proj(key, sel_indices)
-                v = self.v_proj(key, sel_indices)
+                k = self.k_proj(key, selection)
+                v = self.v_proj(key, selection)
 
         else:
             assert key is not None and value is not None
-            q = self.q_proj(query, sel_indices)
-            k = self.k_proj(key, sel_indices)
-            v = self.v_proj(value, sel_indices)
+            q = self.q_proj(query, selection)
+            k = self.k_proj(key, selection)
+            v = self.v_proj(value, selection)
         q *= self.scaling
 
         if self.bias_k is not None:
@@ -430,8 +419,6 @@ class ModularMultiheadAttention(MultiheadAttention):
             )
 
         if saved_state is not None:
-            #TODO saved_state support
-            raise ValueError('``saved_state'' option not supported')
             # saved states are stored with shape (bsz, num_heads, seq_len, head_dim)
             if "prev_key" in saved_state:
                 _prev_key = saved_state["prev_key"]
@@ -548,7 +535,7 @@ class ModularMultiheadAttention(MultiheadAttention):
             attn = attn.contiguous().view(tgt_len, bsz, self.head_dim * self.num_heads_active)
         else:
             attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, self.head_dim * self.num_heads_active)
-        attn = self.out_proj(attn, sel_indices)
+        attn = self.out_proj(attn, selection)
         attn_weights: Optional[Tensor] = None
         if need_weights:
             attn_weights = attn_weights_float.view(
@@ -558,4 +545,4 @@ class ModularMultiheadAttention(MultiheadAttention):
                 # average attention weights over heads
                 attn_weights = attn_weights.mean(dim=0)
 
-        return attn, attn_weights, selection, ctrl
+        return attn, attn_weights

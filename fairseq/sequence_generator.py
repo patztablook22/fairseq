@@ -1010,29 +1010,68 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
 
         TODO - finish the docstring
         """
-        super().__init__(EnsembleModel(models), tgt_dict, **kwargs)
+        super().__init__(EnsembleModelWithSelection(models), tgt_dict, **kwargs)
+        self.left_pad_target = False
 
     @torch.no_grad()
     def generate(self, models, sample, **kwargs):
         self.model.reset_incremental_state()
         finalized = super()._generate(sample, **kwargs)
 
-        encoder_input = {
-            k: v for k, v in sample['net_input'].items()
-            if k != 'prev_output_tokens'
-        }
-        bsz = encoder_input['src_tokens'].size(0)
-        encoder_outs = self.model.forward_encoder(encoder_input)
-        if hasattr(encoder_outs[0], 'selections'):
-            for i in range(bsz):
-                selections = ";".join([
-                    ":".join([
-                        ",".join(sel[i].cpu().numpy().astype(np.str))
-                        for sel in o.selections if sel is not None])
-                    for o in encoder_outs])
-                for j, _ in enumerate(finalized[i]):
-                    finalized[i][j]['selections'] = selections
+        src_tokens = sample["net_input"]["src_tokens"]
+        bsz = src_tokens.shape[0]
+        beam_size = self.beam_size
+
+        src_tokens, src_lengths, prev_output_tokens = self._prepare_batch_for_selection(
+            sample, finalized
+        )
+        ctrl_outputs = self.model.forward_select(src_tokens, src_lengths, prev_output_tokens)
+
+        for i in range(bsz * beam_size):
+            selection = ';'.join([
+                ','.join(
+                    ctrl_out['encoder']
+                    .selection[i]
+                    .cpu().numpy().astype(np.str)
+                ) for ctrl_out in ctrl_outputs
+            ])
+            finalized[i // beam_size][i % beam_size]['enc_selection'] = selection
+            if ctrl_outputs[0]['decoder'] is not None:
+                selection = ';'.join([
+                    ','.join(
+                        ctrl_out['decoder']
+                        .selection[i]
+                        .cpu().numpy().astype(np.str)
+                    ) for ctrl_out in ctrl_outputs
+                ])
+                finalized[i // beam_size][i % beam_size]['dec_selection'] = selection
         return finalized
+
+    def _prepare_batch_for_selection(self, sample, hypothesis):
+        src_tokens = sample["net_input"]["src_tokens"]
+        bsz = src_tokens.shape[0]
+        src_tokens = (
+            src_tokens[:, None, :]
+            .expand(-1, self.beam_size, -1)
+            .contiguous()
+            .view(bsz * self.beam_size, -1)
+        )
+        src_lengths = sample["net_input"]["src_lengths"]
+        src_lengths = (
+            src_lengths[:, None]
+            .expand(-1, self.beam_size)
+            .contiguous()
+            .view(bsz * self.beam_size)
+        )
+        prev_output_tokens = data_utils.collate_tokens(
+            [beam["tokens"] for example in hypothesis for beam in example],
+            self.pad,
+            self.eos,
+            self.left_pad_target,
+            move_eos_to_beginning=True,
+        )
+
+        return src_tokens, src_lengths, prev_output_tokens
 
 
 class EnsembleModelWithAlignment(EnsembleModel):
@@ -1053,3 +1092,17 @@ class EnsembleModelWithAlignment(EnsembleModel):
         if len(self.models) > 1:
             avg_attn.div_(len(self.models))
         return avg_attn
+
+
+class EnsembleModelWithSelection(EnsembleModel):
+    """A wrapper around an ensemble of models."""
+
+    def __init__(self, models):
+        super().__init__(models)
+
+    def forward_select(self, src_tokens, src_lengths, prev_output_tokens):
+        ctrl_outputs = []
+        for model in self.models:
+            decoder_out = model(src_tokens, src_lengths, prev_output_tokens)
+            ctrl_outputs.append(decoder_out[1]['ctrl_output'])
+        return ctrl_outputs

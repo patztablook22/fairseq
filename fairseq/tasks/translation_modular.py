@@ -366,18 +366,22 @@ class TranslationModularTask(FairseqTask):
             return s
 
         gen_out = self.inference_step(generator, [model], sample, None)
-        hyps, refs, sels = [], [], []
+        hyps, refs, enc_sels, dec_sels = [], [], [], []
         for i in range(len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))
             refs.append(decode(
                 utils.strip_pad(sample['target'][i], self.tgt_dict.pad()),
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
-            sels.append(gen_out[i][0]['selections'])
+            enc_sels.append(gen_out[i][0]['enc_selection'])
+            if 'dec_selection' in gen_out[i][0]:
+                dec_sels.append(gen_out[i][0]['dec_selection'])
         if self.args.eval_bleu_print_samples:
             logger.info('example hypothesis: ' + hyps[0])
             logger.info('example reference: ' + refs[0])
-            logger.info('example selections: ' + sels[0])
+            logger.info('example (encoder) selection: ' + enc_sels[0])
+            if dec_sels:
+                logger.info('example (decoder) selection: ' + dec_sels[0])
         if self.args.eval_tokenized_bleu:
             return sacrebleu.corpus_bleu(hyps, [refs], tokenize='none')
         else:
