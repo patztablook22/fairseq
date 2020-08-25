@@ -221,8 +221,11 @@ def _main(args, output_file):
 
                     if args.print_step:
                         print('I-{}\t{}'.format(sample_id, hypo['steps']), file=output_file)
-                    if 'selections' in hypo:
-                        print('M-{}\t{}'.format(sample_id, hypo['selections']), file=output_file)
+
+                    if 'enc_selection' in hypo:
+                        print('Menc-{}\t{}'.format(sample_id, hypo['enc_selection']), file=output_file)
+                    if 'dec_selection' in hypo:
+                        print('Mdec-{}\t{}'.format(sample_id, hypo['dec_selection']), file=output_file)
                     if args.print_attn_confidence:
                         print('C-{}\t{}'.format(sample_id, hypo['enc_self_attn_conf']), file=output_file)
 

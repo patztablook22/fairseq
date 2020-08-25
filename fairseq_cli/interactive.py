@@ -202,6 +202,12 @@ def main(args):
                         id,
                         alignment_str
                     ))
+                if 'enc_selection' in hypo:
+                    print('Menc-{}\t{}'.format(id, hypo['enc_selection']))
+                if 'dec_selection' in hypo:
+                    print('Mdec-{}\t{}'.format(id, hypo['dec_selection']))
+                if args.print_attn_confidence:
+                    print('C-{}\t{}'.format(id, hypo['enc_self_attn_conf']))
 
         # update running id counter
         start_id += len(inputs)

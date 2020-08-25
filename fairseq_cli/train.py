@@ -109,7 +109,7 @@ def main(args, init_distributed=False):
 
     # NOTE: Ugly hack to initialize modular attention controller for training
     if args.arch == 'transformer_modular':
-        model.initialize_best_selection(len(task.datasets['train']))
+        model.initialize_best_ctrl_prediction(len(task.datasets['train']))
 
     # Train until the learning rate gets too small
     max_epoch = args.max_epoch or math.inf

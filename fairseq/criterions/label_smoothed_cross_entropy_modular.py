@@ -49,20 +49,13 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=T
     return loss, nll_loss
 
 
-def compute_sel_lprobs(selections, controllers):
-    assert len(selections) == len(controllers)
-
-    def compute_single(selection, controller):
-        # each sample was generated individually (they run during separate
-        # network executions, therefore, they can have slightly different ctrl
-        # distributions
-        return torch.stack([
-            controller[j].log_prob(selection[:, j, :])
-            for j in range(selection.size(1))], axis=1).sum(-1)
+def compute_sel_lprobs(ctrl_outputs):
+    def compute_single(ctrl_out):
+        return ctrl_out.ctrl.log_prob(
+            ctrl_out.ctrl_prediction).sum(-1)
 
     sel_lprobs = torch.stack([
-        compute_single(selections[i], controllers[i])
-        for i, _ in enumerate(controllers) if selections[i] is not None
+        compute_single(out) for out in ctrl_outputs if out is not None
     ], axis=0).sum(0)
 
     return sel_lprobs
@@ -109,15 +102,15 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
                 # We run the m-step first, to get estimated outputs of
                 # the current best selections
                 sampled_outputs = [
-                    model(**sample['net_input'], indices=sample['id'], mode="m_step")]
+                    model(**sample['net_input'], data_indices=sample['id'], mode="m_step")]
                 for i in range(self.e_step_size):
                     net_out = model(**sample['net_input'], mode="e_step")
                     sampled_outputs.append(net_out)
                 if self.e_step_size > 0:
-                    self.update_best_selection(model, sampled_outputs, sample)
+                    self.update_best_ctrl_prediction(model, sampled_outputs, sample)
         self.step_id = (self.step_id + 1) % (self.m_steps + 1)
 
-        net_out = model(**sample['net_input'], indices=sample['id'], mode="m_step")
+        net_out = model(**sample['net_input'], data_indices=sample['id'], mode="m_step")
         loss, nll_loss, ctrl_loss, sel_entropy, batch_entropy = self.compute_loss(
             model, net_out, sample, reduce=reduce)
         sample_size = sample['target'].size(0) if self.sentence_avg else sample['ntokens']
@@ -138,16 +131,14 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         bsz = lprobs.size(0)
         lprobs = lprobs.view(-1, lprobs.size(-1))
 
-        selections = [
-            sel.unsqueeze(1) if sel is not None else None
-            for sel in net_output[1]['selections']
+        ctrl_outputs = [
+            ctrl_out for ctrl_out in net_output[1]['ctrl_output'].values()
         ]
-        controllers = [[ctrl] for ctrl in net_output[1]['controllers']]
-        sel_lprobs = compute_sel_lprobs(selections, controllers)
+        sel_lprobs = compute_sel_lprobs(ctrl_outputs)
         sel_loss = -sel_lprobs
 
-        sel_entropy = selection_entropy([c[0] for c in controllers])
-        batch_entropy = batch_selection_entropy([c[0] for c in controllers])
+        sel_entropy = selection_entropy([c.ctrl for c in ctrl_outputs if c is not None])
+        batch_entropy = batch_selection_entropy([c.ctrl for c in ctrl_outputs if c is not None])
 
         target = model.get_targets(sample, net_output).view(-1, 1)
         loss, nll_loss = label_smoothed_nll_loss(
@@ -163,13 +154,13 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         loss = loss + sel_loss
         return loss, nll_loss, sel_loss, sel_entropy, batch_entropy
 
-    def update_best_selection(self, model, net_outputs, sample):
+    def update_best_ctrl_prediction(self, model, net_outputs, sample):
         lprobs = [model.get_normalized_probs(out, log_probs=True) for out in net_outputs]
         bsz = lprobs[0].size(0)
         lprobs = [lp.view(-1, lp.size(-1)) for lp in lprobs]
 
         # We compute the target loglikelihoods via nll_loss function
-        # We want non-smoothed probability for the best_selection estimation
+        # We want non-smoothed probability for the best_prediction estimation
         target = model.get_targets(sample, net_outputs[0]).view(-1, 1)
         nll_losses = []
         for lp in lprobs:
@@ -182,35 +173,34 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         nll_losses = torch.stack(nll_losses, axis=1)
         loglikelihoods = -nll_losses
 
-        # we reduce the selections to a single list of matrices (~layers)
-        # so we can extract best selection for each matrix (~layer)
-        # List[shape(bsz, n_samples, n_active)]
-        selections = []
-        controllers = []
-        n_selections = len(net_outputs[0][1]['selections'])
-        for i in range(n_selections):
-            sel = None
-            ctrl = None
-            if net_outputs[0][1]['selections'][i] is not None:
-                sel = torch.stack([
-                    out[1]['selections'][i]
-                    for out in net_outputs], axis=1)
-                ctrl = [
-                    out[1]['controllers'][i]
-                    for out in net_outputs]
-            selections.append(sel)
-            controllers.append(ctrl)
-
-            ctrl = None
-        # shape(bsz, n_samples)
-        sel_lprobs = compute_sel_lprobs(selections, controllers)
+        ctrl_outputs = [
+            net_out[1]['ctrl_output'] for net_out in net_outputs
+        ]
+        sel_lprobs = torch.stack([
+            compute_sel_lprobs(
+                [val for val in ctrl_out.values()]
+            ) for ctrl_out in ctrl_outputs
+        ], axis=1)
 
         joint_lprobs = loglikelihoods + sel_lprobs
         best_sel_indices = joint_lprobs.max(1)[1].detach()
         best_sel_indices = [list(range(bsz)), best_sel_indices]
-        model.update_best_selection(
-            [sel[best_sel_indices] if sel is not None else None
-             for sel in selections], sample['id'])
+
+        predictions = {
+            "encoder": torch.stack(
+                [
+                    net_out[1]['ctrl_output']['encoder'].ctrl_prediction
+                    for net_out in net_outputs
+                ], axis=1)[best_sel_indices],
+            "decoder": None
+        }
+        if net_outputs[0][1]['ctrl_output']['decoder'] is not None:
+            predictions["decoder"] = torch.stack(
+                [
+                    net_out[1]['ctrl_output']['decoder'].ctrl_prediction
+                    for net_out in net_outputs
+                ], axis=1)[best_sel_indices]
+        model.update_best_ctrl_prediction(predictions, sample['id'])
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:

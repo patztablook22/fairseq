@@ -739,6 +739,9 @@ class TransformerDecoder(FairseqIncrementalDecoder):
 
         x = F.dropout(x, p=self.dropout, training=self.training)
 
+        self_attn_weights = []
+        enc_attn_weights = []
+
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
@@ -755,7 +758,7 @@ class TransformerDecoder(FairseqIncrementalDecoder):
             else:
                 self_attn_mask = None
 
-            x, layer_attn, _ = layer(
+            x, self_attn, enc_attn, _ = layer(
                 x,
                 encoder_out.encoder_out if encoder_out is not None else None,
                 encoder_out.encoder_padding_mask if encoder_out is not None else None,
@@ -765,9 +768,13 @@ class TransformerDecoder(FairseqIncrementalDecoder):
                 need_attn=bool((idx == alignment_layer)),
                 need_head_weights=bool((idx == alignment_layer)),
             )
+
+            self_attn_weights.append(self_attn)
+            enc_attn_weights.append(enc_attn)
+
             inner_states.append(x)
-            if layer_attn is not None and idx == alignment_layer:
-                attn = layer_attn.float().to(x)
+            if enc_attn is not None and idx == alignment_layer:
+                attn = enc_attn.float().to(x)
 
         if attn is not None:
             if alignment_heads is not None:
@@ -785,7 +792,15 @@ class TransformerDecoder(FairseqIncrementalDecoder):
         if self.project_out_dim is not None:
             x = self.project_out_dim(x)
 
-        return x, {"attn": [attn], "inner_states": inner_states}
+        attn_weights = {
+            "decoder": self_attn_weights,
+            "encoder_decoder": enc_attn_weights,
+        }
+        return x, {
+            "attn": [attn],
+            "attn_weights": attn_weights,
+            "inner_states": inner_states,
+        }
 
     def output_layer(self, features):
         """Project features to the vocabulary size."""
