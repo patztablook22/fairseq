@@ -202,6 +202,7 @@ def train(args, trainer, task, epoch_itr, max_update=math.inf):
         ),
         default_log_format=('tqdm' if not args.no_progress_bar else 'simple'),
     )
+    progress.log_args(args, tag='train')
 
     trainer.begin_epoch(epoch_itr.epoch)
 

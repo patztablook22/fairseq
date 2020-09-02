@@ -64,10 +64,11 @@ def compute_sel_lprobs(ctrl_outputs):
 @register_criterion('label_smoothed_cross_entropy_modular')
 class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
 
-    def __init__(self, task, sentence_avg, label_smoothing, e_step_size, m_steps):
+    def __init__(self, task, sentence_avg, label_smoothing, ctrl_alpha, e_step_size, m_steps):
         super().__init__(task)
         self.sentence_avg = sentence_avg
         self.eps = label_smoothing
+        self.ctrl_alpha = ctrl_alpha
         
         self.e_step_size = e_step_size
         self.m_steps = m_steps
@@ -82,6 +83,8 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         # fmt: off
         parser.add_argument('--label-smoothing', default=0., type=float, metavar='D',
                             help='epsilon for label smoothing, 0 means no label smoothing')
+        parser.add_argument('--ctrl-alpha', default=1., type=float, metavar='A',
+                            help='ctrl selection loss weight')
         parser.add_argument('--e-step-size', default=10, type=int, metavar='N',
                             help='number of samples per expectation step')
         parser.add_argument('--m-steps', default=10, type=int, metavar='N',
@@ -151,7 +154,7 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
             loss = loss.sum()
             nll_loss = nll_loss.sum()
             sel_loss = sel_loss.sum()
-        loss = loss + sel_loss
+        loss = loss + self.ctrl_alpha * sel_loss
         return loss, nll_loss, sel_loss, sel_entropy, batch_entropy
 
     def update_best_ctrl_prediction(self, model, net_outputs, sample):
@@ -210,6 +213,7 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         ctrl_loss_sum = sum(log.get('ctrl_loss', 0) for log in logging_outputs)
         sel_entropy = sum(log.get('sel_entropy', 0) for log in logging_outputs)
         batch_entropy = sum(log.get('batch_entropy', 0) for log in logging_outputs)
+        ctrl_entropy_ratio = sel_entropy / batch_entropy
         ntokens = sum(log.get('ntokens', 0) for log in logging_outputs)
         sample_size = sum(log.get('sample_size', 0) for log in logging_outputs)
         nsentences = sum(log.get('nsentences', 0) for log in logging_outputs)
@@ -219,6 +223,7 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         metrics.log_scalar('ctrl_loss', ctrl_loss_sum / sample_size / math.log(2), nsentences, round=3)
         metrics.log_scalar('sel_entropy', sel_entropy, 1, round=3)
         metrics.log_scalar('batch_entropy', batch_entropy, 1, round=3)
+        metrics.log_scalar('ctrl_entropy_ratio', ctrl_entropy_ratio, 1, round=3)
         metrics.log_derived('ppl', lambda meters: utils.get_perplexity(meters['nll_loss'].avg))
 
     @staticmethod
