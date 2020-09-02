@@ -411,6 +411,11 @@ except ImportError:
     except ImportError:
         SummaryWriter = None
 
+try:
+    from tensorboardX.summary import hparams
+except ImportError:
+    hparams = None
+
 
 def _close_writers():
     for w in _tensorboard_writers.values():
@@ -448,6 +453,28 @@ class TensorboardProgressBarWrapper(BaseProgressBar):
         """Log intermediate stats to tensorboard."""
         self._log_to_tensorboard(stats, tag, step)
         self.wrapped_bar.log(stats, tag=tag, step=step)
+
+    def _args2hparams(self, args):
+        hp = {}
+        met = {'loss' : None}
+
+        hp_keys = set(args.tensorboard_hparams_keys.split(',') + ['seed'])
+        for k, v in args.__dict__.items():
+            if k in hp_keys:
+                hp[k] = v
+        return hp, met
+
+    def log_args(self, args, tag=None):
+        if hparams is not None:
+            writer = self._writer(tag or '')
+
+            hp, met = self._args2hparams(args)
+            exp, ssi, sei = hparams(hp, met)
+
+            writer.file_writer.add_summary(exp)
+            writer.file_writer.add_summary(ssi)
+            writer.file_writer.add_summary(sei)
+            writer.flush()
 
     def print(self, stats, tag=None, step=None):
         """Print end-of-epoch stats."""
