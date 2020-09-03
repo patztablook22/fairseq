@@ -169,32 +169,45 @@ class ModularCtrl(nn.Module):
     """TODO"""
 
     def __init__(self,
-                 dim,
+                 input_dim,
                  n_modules,
                  n_active,
+                 hidden_depth=0,
+                 hidden_dim=None,
                  ctrl_type='joint'):
         super().__init__()
-        self.dim = dim
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.hidden_depth = hidden_depth
+
         self.n_modules = n_modules
         self.n_active = n_active
         self.ctrl_type = ctrl_type
+
+        layers = []
+        for _ in range(hidden_depth):
+            if hidden_dim is None:
+                raise ValueError('controller hidden_dim cannot be NoneType if hidden_depth > 0')
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            input_dim = hidden_dim
 
         self.subsets = None
         if ctrl_type == 'joint':
             self.subsets = list(itertools.combinations(range(n_modules), n_active))
             self.subsets = torch.tensor(self.subsets, dtype=torch.long)
-            self.out_proj = nn.Linear(dim, self.subsets.size(0))
+            layers.append(nn.Linear(input_dim, self.subsets.size(0)))
         elif ctrl_type == 'factored':
-            self.out_proj = nn.Linear(dim, n_modules * n_active)
+            layers.append(nn.Linear(input_dim, n_modules * n_active))
         else:
             raise ValueError('Invalid module controller type ({})'.format(ctrl_type))
+        self.out_proj = nn.Sequential(*layers)
 
         self.best_prediction = None
         self.reset_parameters()
 
     def forward(self, x, mode, padding_mask=None, indices=None):
         batch_size = x.shape[0]
-        x_flat = x.view(batch_size, -1, self.dim)
+        x_flat = x.view(batch_size, -1, self.input_dim)
         if padding_mask is not None:
             # The mask contains '1' in place of the padding symbols
             mask = (~padding_mask).long()
@@ -253,8 +266,9 @@ class ModularCtrl(nn.Module):
         return self.best_prediction[indices]
 
     def reset_parameters(self):
-        nn.init.xavier_uniform_(
-            self.out_proj.weight, gain=1 / math.sqrt(2))
+        for layer in self.out_proj:
+            nn.init.xavier_uniform_(
+                layer.weight, gain=1 / math.sqrt(2))
 
 class ModularMultiheadAttention(MultiheadAttention):
     """TODO"""

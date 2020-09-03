@@ -85,6 +85,10 @@ class TransformerModularModel(TransformerModel):
         #                    help='tuple of indices of modular layers')
         parser.add_argument('--module-ctrl-type', type=str,
                             help='type of the module controller')
+        parser.add_argument('--module-ctrl-hidden-depth', type=int,
+                            help='num of controller hidden layers')
+        parser.add_argument('--module-ctrl-hidden-dim', type=int,
+                            help='controller hidden dimension')
         # fmt: on
 
     @classmethod
@@ -229,8 +233,12 @@ class TransformerModularEncoder(TransformerEncoder):
         super().__init__(args, dictionary, embed_tokens)
 
         self.module_ctrl = ModularCtrl(
-            args.encoder_embed_dim, args.encoder_attention_heads,
-            args.encoder_attention_heads_active, args.module_ctrl_type)
+            args.encoder_embed_dim,
+            args.encoder_attention_heads,
+            args.encoder_attention_heads_active,
+            hidden_depth=args.module_ctrl_hidden_depth,
+            hidden_dim=args.module_ctrl_hidden_dim,
+            ctrl_type=args.module_ctrl_type)
 
         if self.encoder_layerdrop > 0.0:
             self.layers = LayerDropModuleList(p=self.encoder_layerdrop)
@@ -418,8 +426,12 @@ class TransformerModularDecoder(TransformerDecoder):
             self.module_ctrl = None
         else:
             self.module_ctrl = ModularCtrl(
-                args.decoder_embed_dim, args.decoder_attention_heads,
-                args.decoder_attention_heads_active, args.module_ctrl_type)
+                args.decoder_embed_dim,
+                args.decoder_attention_heads,
+                args.decoder_attention_heads_active,
+                hidden_depth=args.module_ctrl_hidden_depth,
+                hidden_dim=args.module_ctrl_hidden_dim,
+                ctrl_type=args.module_ctrl_type)
 
         if self.decoder_layerdrop > 0.0:
             self.layers = LayerDropModuleList(p=self.decoder_layerdrop)
@@ -655,6 +667,11 @@ def transformer_modular(args):
     args.decoder_modular_layer_indices = getattr(
         args, 'decoder_modular_layer_indices', '()')
     args.share_encoder_ctrl = getattr(args, 'share_encoder_ctrl', False)
+
+    args.module_ctrl_hidden_depth = getattr(
+        args, 'module_ctrl_hidden_depth', 0)
+    args.module_ctrl_hidden_dim = getattr(
+        args, 'module_ctrl_hidden_dim', None)
     args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'joint')
 
     transformer.base_architecture(args)
