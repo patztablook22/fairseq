@@ -86,9 +86,11 @@ class TransformerModularModel(TransformerModel):
         parser.add_argument('--module-ctrl-type', type=str,
                             help='type of the module controller')
         parser.add_argument('--module-ctrl-hidden-depth', type=int,
-                            help='num of controller hidden layers')
+                            help='num of controller DAN hidden layers')
         parser.add_argument('--module-ctrl-hidden-dim', type=int,
-                            help='controller hidden dimension')
+                            help='controller DAN hidden dimension')
+        parser.add_argument('--module-ctrl-word-dropout', type=float,
+                            help='controller DAN word dropout')
         # fmt: on
 
     @classmethod
@@ -238,6 +240,8 @@ class TransformerModularEncoder(TransformerEncoder):
             args.encoder_attention_heads_active,
             hidden_depth=args.module_ctrl_hidden_depth,
             hidden_dim=args.module_ctrl_hidden_dim,
+            word_dropout=args.module_ctrl_word_dropout,
+            activation=getattr(args, "activation_fn", "relu"),
             ctrl_type=args.module_ctrl_type)
 
         if self.encoder_layerdrop > 0.0:
@@ -431,6 +435,8 @@ class TransformerModularDecoder(TransformerDecoder):
                 args.decoder_attention_heads_active,
                 hidden_depth=args.module_ctrl_hidden_depth,
                 hidden_dim=args.module_ctrl_hidden_dim,
+                word_dropout=args.module_ctrl_word_dropout,
+                activation=getattr(args, "activation_fn", "relu"),
                 ctrl_type=args.module_ctrl_type)
 
         if self.decoder_layerdrop > 0.0:
@@ -672,6 +678,8 @@ def transformer_modular(args):
         args, 'module_ctrl_hidden_depth', 0)
     args.module_ctrl_hidden_dim = getattr(
         args, 'module_ctrl_hidden_dim', None)
+    args.module_ctrl_word_dropout = getattr(
+        args, 'module_ctrl_word_dropout', 0.0)
     args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'joint')
 
     transformer.base_architecture(args)

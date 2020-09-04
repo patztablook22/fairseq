@@ -23,6 +23,11 @@ from fairseq.modules.quant_noise import quant_noise
 logger = logging.getLogger(__name__)
 
 
+def masked_mean(x, mask, axis=None):
+    x *= mask
+    return x.sum(axis) / mask.sum(axis)
+
+
 class ModularLinear(nn.Module):
     """TODO"""
 
@@ -174,6 +179,8 @@ class ModularCtrl(nn.Module):
                  n_active,
                  hidden_depth=0,
                  hidden_dim=None,
+                 word_dropout=0.0,
+                 activation="relu",
                  ctrl_type='joint'):
         super().__init__()
         self.input_dim = input_dim
@@ -190,34 +197,52 @@ class ModularCtrl(nn.Module):
                 raise ValueError('controller hidden_dim cannot be NoneType if hidden_depth > 0')
             layers.append(nn.Linear(input_dim, hidden_dim))
             input_dim = hidden_dim
+        self.fc_layers = nn.ModuleList(layers)
+        self.word_dropout = word_dropout
+        self.activation_fn = utils.get_activation_fn(activation=activation)
 
         self.subsets = None
         if ctrl_type == 'joint':
             self.subsets = list(itertools.combinations(range(n_modules), n_active))
             self.subsets = torch.tensor(self.subsets, dtype=torch.long)
-            layers.append(nn.Linear(input_dim, self.subsets.size(0)))
+            self.out_proj = nn.Linear(input_dim, self.subsets.size(0))
         elif ctrl_type == 'factored':
-            layers.append(nn.Linear(input_dim, n_modules * n_active))
+            self.out_proj = nn.Linear(input_dim, n_modules * n_active)
         else:
             raise ValueError('Invalid module controller type ({})'.format(ctrl_type))
-        self.out_proj = nn.Sequential(*layers)
 
         self.best_prediction = None
         self.reset_parameters()
 
-    def forward(self, x, mode, padding_mask=None, indices=None):
+    def extract_features(self, x, padding_mask=None):
         batch_size = x.shape[0]
-        x_flat = x.view(batch_size, -1, self.input_dim)
+        x = x.view(batch_size, -1, self.input_dim)
+
         if padding_mask is not None:
             # The mask contains '1' in place of the padding symbols
-            mask = (~padding_mask).long()
-            mask_flat = mask.view(batch_size, -1, 1)
-            x_flat *= mask_flat
-        x_flat = x_flat.sum(1)
+            mask = ~padding_mask
+            mask = mask.view(batch_size, -1, 1)
+        else:
+            mask = torch.ones(x.size(0), x.size(1)).to(x.device)
+        mask = mask.float()
 
-        logits = self.out_proj(x_flat)
-        #if torch.isnan(x).any():
-        #    logger.warn('Controller input vector contains NaN')
+        # Word dropout described in Iyyer et al. (2015)
+        if self.training:
+            mask *= torch.bernoulli(
+                torch.ones(mask.shape) * (1. - self.word_dropout))
+
+        x = masked_mean(x, mask=mask, axis=1)
+
+        for layer in self.fc_layers:
+            x = layer(x)
+            # Should we put batch_norm here?
+            x = self.activation_fn(x)
+        return x
+
+    def forward(self, x, mode, padding_mask=None, indices=None):
+        features = self.extract_features(x, padding_mask)
+        logits = self.out_proj(features)
+
         if self.ctrl_type == 'factored':
             logits = logits.view(-1, self.n_active, self.n_modules)
         elif self.ctrl_type == 'joint':
@@ -266,9 +291,11 @@ class ModularCtrl(nn.Module):
         return self.best_prediction[indices]
 
     def reset_parameters(self):
-        for layer in self.out_proj:
+        for layer in self.fc_layers:
             nn.init.xavier_uniform_(
                 layer.weight, gain=1 / math.sqrt(2))
+        nn.init.xavier_uniform_(
+            self.out_proj.weight, gain=1 / math.sqrt(2))
 
 class ModularMultiheadAttention(MultiheadAttention):
     """TODO"""
