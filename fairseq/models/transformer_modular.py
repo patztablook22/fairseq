@@ -297,7 +297,7 @@ class TransformerModularEncoder(TransformerEncoder):
         TODO: mode/indices description
         """
         if mode is None:
-            logger.warning('ctrl mode==None in forward method, using mode=validation as default')
+            #logger.warning('ctrl mode==None in forward method, using mode=validation as default')
             mode = 'validation'
 
         x, encoder_embedding = self.forward_embedding(src_tokens)
@@ -549,7 +549,7 @@ class TransformerModularDecoder(TransformerDecoder):
             indices: TODO
         """
         if mode is None:
-            logger.warning('ctrl mode==None in forward method, using mode=validation as default')
+            #logger.warning('ctrl mode==None in forward method, using mode=validation as default')
             mode = 'validation'
 
         if alignment_layer is None:
