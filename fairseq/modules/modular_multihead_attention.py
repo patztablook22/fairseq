@@ -20,12 +20,12 @@ from fairseq.modules.multihead_attention import MultiheadAttention
 from fairseq.modules.quant_noise import quant_noise
 
 
-_EPS = 1e-9
+_EPS = 1e-6
 logger = logging.getLogger(__name__)
 
 
 def masked_mean(x, mask, axis=None):
-    x *= mask
+    x *= mask.float()
     return x.sum(axis) / (mask.sum(axis) + _EPS)
 
 
@@ -180,6 +180,7 @@ class ModularCtrl(nn.Module):
                  n_active,
                  hidden_depth=0,
                  hidden_dim=None,
+                 dropout=0.0,
                  word_dropout=0.0,
                  activation="relu",
                  ctrl_type='joint'):
@@ -192,17 +193,18 @@ class ModularCtrl(nn.Module):
         self.n_active = n_active
         self.ctrl_type = ctrl_type
 
-        layers = []
-        layers_bn = []
+        modules = []
         for _ in range(hidden_depth):
             if hidden_dim is None:
                 raise ValueError('controller hidden_dim cannot be NoneType if hidden_depth > 0')
-            layers.append(nn.Linear(input_dim, hidden_dim))
-            layers_bn.append(nn.BatchNorm1d(hidden_dim))
+            modules.append(nn.Linear(input_dim, hidden_dim))
+            #modules.append(nn.BatchNorm1d(hidden_dim))
+            modules.append(nn.ReLU())
+            modules.append(nn.Dropout(p=dropout))
             input_dim = hidden_dim
-        self.fc_layers = nn.ModuleList(layers)
-        self.fc_bn = nn.ModuleList(layers_bn)
+        self.fc_net = nn.Sequential(*modules)
 
+        self.dropout = dropout
         self.word_dropout = word_dropout
         self.activation_fn = utils.get_activation_fn(activation=activation)
 
@@ -220,7 +222,7 @@ class ModularCtrl(nn.Module):
         self.reset_parameters()
 
     def extract_features(self, x, padding_mask=None):
-        bsz = x.shape[0]
+        bsz = x.size(0)
         x = x.view(bsz, -1, self.input_dim)
 
         if padding_mask is not None:
@@ -228,7 +230,7 @@ class ModularCtrl(nn.Module):
             mask = ~padding_mask
             mask = mask.view(bsz, -1, 1)
         else:
-            mask = torch.ones(x.size(0), x.size(1)).to(x.device)
+            mask = torch.ones(x.size(0), x.size(1), 1).to(x.device)
         mask = mask.float()
 
         # Word dropout described in Iyyer et al. (2015)
@@ -238,10 +240,7 @@ class ModularCtrl(nn.Module):
 
         x = masked_mean(x, mask=mask, axis=1)
 
-        for i, (layer, bn) in enumerate(zip(self.fc_layers, self.fc_bn)):
-            x = layer(bn(x))
-            x = self.activation_fn(x)
-        return x
+        return self.fc_net(x)
 
     def forward(self, x, mode, padding_mask=None, indices=None):
         features = self.extract_features(x, padding_mask)
@@ -295,11 +294,12 @@ class ModularCtrl(nn.Module):
         return self.best_prediction[indices]
 
     def reset_parameters(self):
-        for layer in self.fc_layers:
-            nn.init.xavier_uniform_(
-                layer.weight, gain=1 / math.sqrt(2))
+        #for layer in self.fc_layers:
+        #    nn.init.xavier_uniform_(
+        #        layer.weight, gain=1 / math.sqrt(2))
         nn.init.xavier_uniform_(
             self.out_proj.weight, gain=1 / math.sqrt(2))
+
 
 class ModularMultiheadAttention(MultiheadAttention):
     """TODO"""
