@@ -456,7 +456,7 @@ class TensorboardProgressBarWrapper(BaseProgressBar):
 
     def _args2hparams(self, args):
         hp = {}
-        met = {'loss' : None}
+        met = {'loss' : None, 'bleu' : None}
 
         hp_keys = set(args.tensorboard_hparams_keys.split(',') + ['seed'])
         for k, v in args.__dict__.items():

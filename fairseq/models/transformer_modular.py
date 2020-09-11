@@ -240,6 +240,7 @@ class TransformerModularEncoder(TransformerEncoder):
             args.encoder_attention_heads_active,
             hidden_depth=args.module_ctrl_hidden_depth,
             hidden_dim=args.module_ctrl_hidden_dim,
+            dropout=self.dropout,
             word_dropout=args.module_ctrl_word_dropout,
             activation=getattr(args, "activation_fn", "relu"),
             ctrl_type=args.module_ctrl_type)
@@ -435,6 +436,7 @@ class TransformerModularDecoder(TransformerDecoder):
                 args.decoder_attention_heads_active,
                 hidden_depth=args.module_ctrl_hidden_depth,
                 hidden_dim=args.module_ctrl_hidden_dim,
+                dropout=self.dropout,
                 word_dropout=args.module_ctrl_word_dropout,
                 activation=getattr(args, "activation_fn", "relu"),
                 ctrl_type=args.module_ctrl_type)
