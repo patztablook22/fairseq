@@ -175,7 +175,7 @@ def main(cfg: FairseqConfig) -> None:
 
     # NOTE: Ugly hack to initialize modular attention controller for training
     if args.arch == 'transformer_modular':
-        model.initialize_best_ctrl_prediction(len(task.datasets['train']))
+        model.initialize_best_ctrl_selection(len(task.datasets['train']))
 
     max_epoch = cfg.optimization.max_epoch or math.inf
     lr = trainer.get_lr()

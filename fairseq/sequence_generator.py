@@ -1014,7 +1014,7 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
         self.left_pad_target = False
 
     @torch.no_grad()
-    def generate(self, models, sample, **kwargs):
+    def generate(self, models, sample, selections=None, **kwargs):
         self.model.reset_incremental_state()
         finalized = super()._generate(sample, **kwargs)
 
@@ -1022,10 +1022,15 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
         bsz = src_tokens.shape[0]
         beam_size = self.beam_size
 
-        src_tokens, src_lengths, prev_output_tokens = self._prepare_batch_for_selection(
-            sample, finalized
-        )
-        ctrl_outputs = self.model.forward_select(src_tokens, src_lengths, prev_output_tokens)
+        src_tokens, src_lengths, prev_output_tokens, selections = self._prepare_batch_for_selection(
+            sample,
+            finalized,
+            selections)
+        ctrl_outputs = self.model.forward_select(
+            src_tokens,
+            src_lengths,
+            prev_output_tokens,
+            selections=selections)
 
         for i in range(bsz * beam_size):
             selection = ';'.join([
@@ -1047,7 +1052,7 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
                 finalized[i // beam_size][i % beam_size]['dec_selection'] = selection
         return finalized
 
-    def _prepare_batch_for_selection(self, sample, hypothesis):
+    def _prepare_batch_for_selection(self, sample, hypothesis, selections=None):
         src_tokens = sample["net_input"]["src_tokens"]
         bsz = src_tokens.shape[0]
         src_tokens = (
@@ -1070,8 +1075,26 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
             self.left_pad_target,
             move_eos_to_beginning=True,
         )
+        if selections is not None:
+            new_selections = []
+            for sel in selections:
+                sel['encoder'] = (
+                    sel['encoder'][:, None, :]
+                    .expand(-1, self.beam_size, -1)
+                    .contiguous()
+                    .view(bsz * self.beam_size, -1)
+                )
+                if sel['decoder'] is not None:
+                    sel['decoder'] = (
+                       sel['decoder'][:, None, :]
+                        .expand(-1, self.beam_size, -1)
+                        .contiguous()
+                        .view(bsz * self.beam_size, -1)
+                    )
+                new_selections.append(sel)
+            selections = new_selections
 
-        return src_tokens, src_lengths, prev_output_tokens
+        return src_tokens, src_lengths, prev_output_tokens, selections
 
 
 class EnsembleModelWithAlignment(EnsembleModel):
@@ -1100,9 +1123,20 @@ class EnsembleModelWithSelection(EnsembleModel):
     def __init__(self, models):
         super().__init__(models)
 
-    def forward_select(self, src_tokens, src_lengths, prev_output_tokens):
+    def forward_select(self,
+                       src_tokens,
+                       src_lengths,
+                       prev_output_tokens,
+                       selections=None):
         ctrl_outputs = []
-        for model in self.models:
-            decoder_out = model(src_tokens, src_lengths, prev_output_tokens)
+        for i, model in enumerate(self.models):
+            sel = None
+            if selections is not None:
+                sel = selections[i]
+            decoder_out = model(
+                src_tokens,
+                src_lengths,
+                prev_output_tokens,
+                fixed_selection=sel)
             ctrl_outputs.append(decoder_out[1]['ctrl_output'])
         return ctrl_outputs
