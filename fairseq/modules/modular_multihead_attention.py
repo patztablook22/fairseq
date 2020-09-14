@@ -218,7 +218,7 @@ class ModularCtrl(nn.Module):
         else:
             raise ValueError('Invalid module controller type ({})'.format(ctrl_type))
 
-        self.best_prediction = None
+        self.best_selection = None
         self.reset_parameters()
 
     def extract_features(self, x, padding_mask=None):
@@ -242,7 +242,7 @@ class ModularCtrl(nn.Module):
 
         return self.fc_net(x)
 
-    def forward(self, x, mode, padding_mask=None, indices=None):
+    def forward(self, x, mode, padding_mask=None, indices=None, fixed_selection=None):
         features = self.extract_features(x, padding_mask)
         logits = self.out_proj(features)
 
@@ -254,17 +254,26 @@ class ModularCtrl(nn.Module):
 
         # batch_size x 1 x subset_size
         if mode == 'e_step':
-            ctrl_prediction = ctrl.sample([1])[0]
+            ctrl_prediction = ctrl.sample([1])[0].to(x.device)
+            selection = self.pred2sel(ctrl_prediction)
         elif mode == 'm_step':
             assert indices is not None
-            ctrl_prediction = self.get_best_prediction(indices)
+            selection = self.get_best_selection(indices).to(x.device)
+            ctrl_prediction = self.sel2pred(selection)
         elif mode == 'validation':
-            ctrl_prediction = logits.max(-1)[1]
+            ctrl_prediction = logits.max(-1)[1].to(x.device)
+            selection = self.pred2sel(ctrl_prediction)
         else:
             raise ValueError('Invalid ModuleCtrl mode: {}'.format(mode))
 
-        ctrl_prediction = ctrl_prediction.to(x.device)
-        selection = self.pred2sel(ctrl_prediction)
+        if fixed_selection is not None:
+            selection = fixed_selection
+            if mode != 'validation' and fixed_selection.size(-1) != self.n_active:
+                raise ValueError(
+                    'Size of ``fixed_selection'' and ``n_active'' must be '
+                    'equal outside of the ``validation'' controller mode')
+            elif mode != 'validation':
+                ctrl_prediction =  self.sel2pred(selection)
 
         return ModularCtrlOut(
             ctrl=ctrl,
@@ -272,26 +281,45 @@ class ModularCtrl(nn.Module):
             ctrl_prediction=ctrl_prediction,
         )
 
+    def list_all_predictions(self):
+        if self.subsets is not None:
+            return torch.arange(0, len(self.subsets)).long()
+        raise ValueError('list_all_predictions not supported for ctrl_type=="factored"')
+
+    def list_all_selections(self):
+        if self.subsets is not None:
+            return self.subsets
+        raise ValueError('list_all_selections not supported for ctrl_type=="factored"')
+
     def pred2sel(self, prediction):
         if self.subsets is not None:
             return self.subsets[prediction].squeeze(1)
         return prediction
 
-    def initialize_best_prediction(self, dataset_size):
+    def sel2pred(self, selection):
+        if self.subsets is not None:
+            return torch.cat(
+                [
+                    torch.nonzero((s == self.subsets).prod(1), as_tuple=False)
+                    for s in selection
+                ], 0)
+        return selection
+
+    def initialize_best_selection(self, dataset_size):
         if self.subsets is not None:
             sel_size = self.subsets.size(0)
-            self.best_prediction = torch.LongTensor(
-                dataset_size, 1).random_(0, sel_size)
+            prediction = torch.LongTensor(dataset_size, 1).random_(0, sel_size)
+            self.best_selection = self.pred2sel(prediction)
         else:
-            self.best_prediction = torch.LongTensor(
+            self.best_selection = torch.LongTensor(
                 dataset_size, self.n_active).random_(0, self.n_modules)
 
-    def update_best_prediction(self, sel, indices):
-        self.best_prediction[indices] = sel.to(self.best_prediction.device)
+    def update_best_selection(self, sel, indices):
+        self.best_selection[indices] = sel.to(self.best_selection.device)
 
-    def get_best_prediction(self, indices):
-        assert self.best_prediction is not None
-        return self.best_prediction[indices]
+    def get_best_selection(self, indices):
+        assert self.best_selection is not None
+        return self.best_selection[indices]
 
     def reset_parameters(self):
         #for layer in self.fc_layers:

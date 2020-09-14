@@ -155,17 +155,38 @@ class TransformerModularModel(TransformerModel):
             no_encoder_attn=getattr(args, "no_cross_attention", False),
         )
 
-    def initialize_best_ctrl_prediction(self, dataset_size):
-        self.encoder.initialize_best_ctrl_prediction(dataset_size)
-        self.decoder.initialize_best_ctrl_prediction(dataset_size)
+    def initialize_best_ctrl_selection(self, dataset_size):
+        self.encoder.initialize_best_ctrl_selection(dataset_size)
+        self.decoder.initialize_best_ctrl_selection(dataset_size)
 
-    def update_best_ctrl_prediction(self,
-                                    predictions: Dict[str, ModularCtrlOut],
+    def update_best_ctrl_selection(self,
+                                    selections: Dict[str, ModularCtrlOut],
                                     data_indices):
-        self.encoder.update_best_ctrl_prediction(
-            predictions['encoder'], data_indices)
-        self.decoder.update_best_ctrl_prediction(
-            predictions['decoder'], data_indices)
+        self.encoder.update_best_ctrl_selection(
+            selections['encoder'], data_indices)
+        self.decoder.update_best_ctrl_selection(
+            selections['decoder'], data_indices)
+
+    def list_all_selections(self):
+        """TODO"""
+        enc_pred = self.encoder.list_all_selections()
+        dec_pred = self.decoder.list_all_selections()
+        res = []
+        for ep in enc_pred:
+            pred = {'encoder': ep}
+            if dec_pred is not None:
+                for dp in dec_pred:
+                    pred['decoder'] = dp
+                    res.append({
+                        'encoder': ep,
+                        'decoder': dp,
+                    })
+            else:
+                res.append({
+                    'encoder': ep,
+                    'decoder': None,
+                })
+        return res
 
     def forward(
         self,
@@ -174,6 +195,7 @@ class TransformerModularModel(TransformerModel):
         prev_output_tokens,
         mode: str = None,
         data_indices: Optional[Tensor] = None,
+        fixed_selection: Optional[Dict[str, Tensor]] = None,
         return_all_hiddens: bool = True,
         features_only: bool = False,
         alignment_layer: Optional[int] = None,
@@ -182,11 +204,23 @@ class TransformerModularModel(TransformerModel):
         """
         TODO: mode/indices description
         """
+        if fixed_selection is None:
+            fixed_selection = {
+                'encoder' : None,
+                'decoder' : None,
+            }
+        else:
+            if 'encoder' not in fixed_selection:
+                fixed_selection['encoder'] = None
+            if 'decoder' not in fixed_selection:
+                fixed_selection['decoder'] = None
+
         encoder_out = self.encoder(
             src_tokens,
             src_lengths=src_lengths,
             mode=mode,
             data_indices=data_indices,
+            fixed_selection=fixed_selection['encoder'],
             return_all_hiddens=return_all_hiddens,
         )
         x, extra = self.decoder(
@@ -194,6 +228,7 @@ class TransformerModularModel(TransformerModel):
             encoder_out=encoder_out,
             mode=mode,
             data_indices=data_indices,
+            fixed_selection=fixed_selection['decoder'],
             features_only=features_only,
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
@@ -280,11 +315,14 @@ class TransformerModularEncoder(TransformerEncoder):
                 x, selection, encoder_padding_mask,
                 need_head_weights=need_head_weights)
 
-    def initialize_best_ctrl_prediction(self, dataset_size):
-        self.module_ctrl.initialize_best_prediction(dataset_size)
+    def initialize_best_ctrl_selection(self, dataset_size):
+        self.module_ctrl.initialize_best_selection(dataset_size)
 
-    def update_best_ctrl_prediction(self, prediction, data_indices):
-        self.module_ctrl.update_best_prediction(prediction, data_indices)
+    def update_best_ctrl_selection(self, selection, data_indices):
+        self.module_ctrl.update_best_selection(selection, data_indices)
+
+    def list_all_selections(self):
+        return self.module_ctrl.list_all_selections()
 
     def forward(
         self,
@@ -292,6 +330,7 @@ class TransformerModularEncoder(TransformerEncoder):
         src_lengths,
         mode: str = None,
         data_indices: Optional[Tensor] = None,
+        fixed_selection: Optional[Tensor] = None,
         return_all_hiddens: bool = False,
     ):
         """
@@ -309,7 +348,7 @@ class TransformerModularEncoder(TransformerEncoder):
         encoder_padding_mask = src_tokens.eq(self.padding_idx)
 
         # produce module selection
-        ctrl_out = self.module_ctrl(x, mode, encoder_padding_mask, data_indices)
+        ctrl_out = self.module_ctrl(x, mode, encoder_padding_mask, data_indices, fixed_selection)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -495,13 +534,18 @@ class TransformerModularDecoder(TransformerDecoder):
                 need_head_weights=need_head_weights,
             )
 
-    def initialize_best_ctrl_prediction(self, dataset_size):
+    def initialize_best_ctrl_selection(self, dataset_size):
         if self.module_ctrl is not None:
-            self.module_ctrl.initialize_best_prediction(dataset_size)
+            self.module_ctrl.initialize_best_selection(dataset_size)
 
-    def update_best_ctrl_prediction(self, prediction, data_indices):
+    def update_best_ctrl_selection(self, selection, data_indices):
         if self.module_ctrl is not None:
-            self.module_ctrl.update_best_prediction(prediction, data_indices)
+            self.module_ctrl.update_best_selection(selection, data_indices)
+
+    def list_all_selections(self):
+        if self.module_ctrl is not None:
+            return self.module_ctrl.list_all_selections()
+        return None
 
     def forward(
         self,
@@ -509,6 +553,7 @@ class TransformerModularDecoder(TransformerDecoder):
         encoder_out: Optional[EncoderOut] = None,
         mode: str = None,
         data_indices: Optional[Tensor] = None,
+        fixed_selection: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         features_only: bool = False,
         alignment_layer: Optional[int] = None,
@@ -526,6 +571,7 @@ class TransformerModularDecoder(TransformerDecoder):
             encoder_out=encoder_out,
             mode=mode,
             data_indices=data_indices,
+            fixed_selection=fixed_selection,
             incremental_state=incremental_state,
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
@@ -540,6 +586,7 @@ class TransformerModularDecoder(TransformerDecoder):
         encoder_out: Optional[EncoderOut] = None,
         mode: str = None,
         data_indices: Optional[Tensor] = None,
+        fixed_selection: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         full_context_alignment: bool = False,
         alignment_layer: Optional[int] = None,
@@ -597,8 +644,13 @@ class TransformerModularDecoder(TransformerDecoder):
                 encoder_out.encoder_out.transpose(0, 1),
                 mode,
                 padding_mask=encoder_out.encoder_padding_mask,
-                indices=data_indices)
+                indices=data_indices,
+                fixed_selection=fixed_selection)
         else:
+            if fixed_selection is not None:
+                logger.warning(
+                    'Decoder ``fixed_selection'' forward param ignored due to '
+                    '--shared-encoder-ctrl==True')
             ctrl_out = encoder_out.ctrl_output
 
         # B x T x C -> T x B x C
