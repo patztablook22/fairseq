@@ -275,6 +275,8 @@ class ModularCtrl(nn.Module):
             elif mode != 'validation':
                 ctrl_prediction =  self.sel2pred(selection)
 
+        selection = selection.to(x.device)
+        ctrl_prediction = ctrl_prediction.to(x.device)
         return ModularCtrlOut(
             ctrl=ctrl,
             selection=selection,
@@ -300,7 +302,7 @@ class ModularCtrl(nn.Module):
         if self.subsets is not None:
             return torch.cat(
                 [
-                    torch.nonzero((s == self.subsets).prod(1), as_tuple=False)
+                    torch.nonzero((s.to(self.subsets.device) == self.subsets).prod(1), as_tuple=False)
                     for s in selection
                 ], 0)
         return selection
