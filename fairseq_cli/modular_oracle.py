@@ -176,11 +176,26 @@ def main(args):
 
                 selections = []
                 for model in models:
-                    # 1. Compute outputs for every ctrl selection
-                    sampled_outputs = criterion.sample_outputs(model, sample, random_samples=False)
+                    if (
+                            args.fixed_encoder_selection is not None
+                            or args.fixed_decoder_selection is not None
+                        ):
+                        selection = {
+                            'encoder' : None,
+                            'decoder' : None,
+                        }
+                        if args.fixed_encoder_selection is not None:
+                            sel = torch.tensor(eval(args.fixed_encoder_selection))
+                            selection['encoder'] = sel.repeat(sample['id'].size(0), 1)
+                        if args.fixed_decoder_selection is not None:
+                            sel = torch.tensor(eval(args.fixed_decoder_selection))
+                            selection['decoder'] = sel.repeat(sample['id'].size(0), 1)
+                    else:
+                        # 1. Compute outputs for every ctrl selection
+                        sampled_outputs = criterion.sample_outputs(model, sample, random_samples=False)
 
-                    # 2. Take selection with the lowest loss (given true predictions)
-                    selection = criterion.compute_best_selection(model, sampled_outputs, sample)
+                        # 2. Take selection with the lowest loss (given true predictions)
+                        selection = criterion.compute_best_selection(model, sampled_outputs, sample)
                     selections.append(selection)
 
                 # 3. Use the best selection to predict output in the inference mode
