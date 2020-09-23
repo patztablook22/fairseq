@@ -338,7 +338,6 @@ class ModularMultiheadAttention(MultiheadAttention):
         self,
         embed_dim,
         num_heads,
-        num_heads_active,
         kdim=None,
         vdim=None,
         dropout=0.0,
@@ -363,8 +362,6 @@ class ModularMultiheadAttention(MultiheadAttention):
             encoder_decoder_attention=encoder_decoder_attention,
             q_noise=q_noise,
             qn_block_size=qn_block_size)
-        assert num_heads_active <= self.num_heads
-        self.num_heads_active = num_heads_active
 
         if q_noise > 0.:
             logger.warning('quant_noise modules are not properly supported (tested) at the moment')
@@ -477,19 +474,19 @@ class ModularMultiheadAttention(MultiheadAttention):
 
         q = (
             q.contiguous()
-            .view(tgt_len, bsz * self.num_heads_active, self.head_dim)
+            .view(tgt_len, bsz * selection.size(1), self.head_dim)
             .transpose(0, 1)
         )
         if k is not None:
             k = (
                 k.contiguous()
-                .view(-1, bsz * self.num_heads_active, self.head_dim)
+                .view(-1, bsz * selection.size(1), self.head_dim)
                 .transpose(0, 1)
             )
         if v is not None:
             v = (
                 v.contiguous()
-                .view(-1, bsz * self.num_heads_active, self.head_dim)
+                .view(-1, bsz * selection.size(1), self.head_dim)
                 .transpose(0, 1)
             )
 
@@ -498,7 +495,7 @@ class ModularMultiheadAttention(MultiheadAttention):
             if "prev_key" in saved_state:
                 _prev_key = saved_state["prev_key"]
                 assert _prev_key is not None
-                prev_key = _prev_key.view(bsz * self.num_heads_active, -1, self.head_dim)
+                prev_key = _prev_key.view(bsz * selection.size(1), -1, self.head_dim)
                 if static_kv:
                     k = prev_key
                 else:
@@ -507,7 +504,7 @@ class ModularMultiheadAttention(MultiheadAttention):
             if "prev_value" in saved_state:
                 _prev_value = saved_state["prev_value"]
                 assert _prev_value is not None
-                prev_value = _prev_value.view(bsz * self.num_heads_active, -1, self.head_dim)
+                prev_value = _prev_value.view(bsz * selection.size(1), -1, self.head_dim)
                 if static_kv:
                     v = prev_value
                 else:
@@ -525,8 +522,8 @@ class ModularMultiheadAttention(MultiheadAttention):
                 static_kv=static_kv,
             )
 
-            saved_state["prev_key"] = k.view(bsz, self.num_heads_active, -1, self.head_dim)
-            saved_state["prev_value"] = v.view(bsz, self.num_heads_active, -1, self.head_dim)
+            saved_state["prev_key"] = k.view(bsz, selection.size(1), -1, self.head_dim)
+            saved_state["prev_value"] = v.view(bsz, selection.size(1), -1, self.head_dim)
             saved_state["prev_key_padding_mask"] = key_padding_mask
             # In this branch incremental_state is never None
             assert incremental_state is not None
@@ -567,7 +564,7 @@ class ModularMultiheadAttention(MultiheadAttention):
         attn_weights = ModularMultiheadAttention.apply_sparse_mask(
             attn_weights, tgt_len, src_len, bsz)
 
-        assert list(attn_weights.size()) == [bsz * self.num_heads_active, tgt_len, src_len]
+        assert list(attn_weights.size()) == [bsz * selection.size(1), tgt_len, src_len]
 
         if attn_mask is not None:
             attn_mask = attn_mask.unsqueeze(0)
@@ -577,7 +574,7 @@ class ModularMultiheadAttention(MultiheadAttention):
 
         if key_padding_mask is not None:
             # don't attend to padding symbols
-            attn_weights = attn_weights.view(bsz, self.num_heads_active, tgt_len, src_len)
+            attn_weights = attn_weights.view(bsz, selection.size(1), tgt_len, src_len)
             if not self.tpu:
                 attn_weights = attn_weights.masked_fill(
                     key_padding_mask.unsqueeze(1).unsqueeze(2).to(torch.bool),
@@ -587,7 +584,7 @@ class ModularMultiheadAttention(MultiheadAttention):
                 attn_weights = attn_weights.transpose(0, 2)
                 attn_weights = attn_weights.masked_fill(key_padding_mask, float('-inf'))
                 attn_weights = attn_weights.transpose(0, 2)
-            attn_weights = attn_weights.view(bsz * self.num_heads_active, tgt_len, src_len)
+            attn_weights = attn_weights.view(bsz * selection.size(1), tgt_len, src_len)
 
         if before_softmax:
             return attn_weights, v, selection, ctrl
@@ -603,18 +600,18 @@ class ModularMultiheadAttention(MultiheadAttention):
         )
         assert v is not None
         attn = torch.bmm(attn_probs, v)
-        assert list(attn.size()) == [bsz * self.num_heads_active, tgt_len, self.head_dim]
+        assert list(attn.size()) == [bsz * selection.size(1), tgt_len, self.head_dim]
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)
             # the transpose is a no-op copy before view, thus unnecessary
-            attn = attn.contiguous().view(tgt_len, bsz, self.head_dim * self.num_heads_active)
+            attn = attn.contiguous().view(tgt_len, bsz, self.head_dim * selection.size(1))
         else:
-            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, self.head_dim * self.num_heads_active)
+            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, self.head_dim * selection.size(1))
         attn = self.out_proj(attn, selection)
         attn_weights: Optional[Tensor] = None
         if need_weights:
             attn_weights = attn_weights_float.view(
-                bsz, self.num_heads_active, tgt_len, src_len
+                bsz, selection.size(1), tgt_len, src_len
             ).transpose(1, 0)
             if not need_head_weights:
                 # average attention weights over heads

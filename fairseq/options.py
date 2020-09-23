@@ -419,6 +419,8 @@ def add_speech_generation_args(parser):
                        help='if set, print selections from modular_multihead_attention controller')
     group.add_argument('--print-attn-confidence', action='store_true',
                        help='if set, print confidence of each attention head')
+    group.add_argument('--fixed-encoder-selection', default=None)
+    group.add_argument('--fixed-decoder-selection', default=None)
 
     group.add_argument('--print-step', action='store_true')
 

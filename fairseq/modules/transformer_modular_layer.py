@@ -28,7 +28,6 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         return ModularMultiheadAttention(
             embed_dim,
             args.encoder_attention_heads,
-            args.encoder_attention_heads_active,
             dropout=args.attention_dropout,
             self_attention=True,
             q_noise=self.quant_noise,
@@ -113,7 +112,6 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         return ModularMultiheadAttention(
             embed_dim,
             args.decoder_attention_heads,
-            args.decoder_attention_heads_active,
             dropout=args.attention_dropout,
             add_bias_kv=add_bias_kv,
             add_zero_attn=add_zero_attn,
@@ -126,7 +124,6 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         return ModularMultiheadAttention(
             embed_dim,
             args.decoder_attention_heads,
-            args.decoder_attention_heads_active,
             kdim=getattr(args, "encoder_embed_dim", None),
             vdim=getattr(args, "encoder_embed_dim", None),
             dropout=args.attention_dropout,
