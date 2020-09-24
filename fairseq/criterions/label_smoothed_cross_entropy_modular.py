@@ -4,6 +4,7 @@
 # LICENSE file in the root directory of this source tree.
 
 import math
+import random
 import torch
 
 from fairseq import metrics, utils
@@ -105,7 +106,7 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
             if self.e_step_size != 0:
                 sampled_outputs = self.sample_outputs(
                     model, sample,
-                    random_samples=(self.e_step_size > 0))
+                    sample_size=self.e_step_size)
                 self.update_best_ctrl_selection(model, sampled_outputs, sample)
         self.step_id = (self.step_id + 1) % (self.m_steps + 1)
 
@@ -125,32 +126,38 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         }
         return loss, sample_size, logging_output
 
-    def sample_outputs(self, model, sample, random_samples=True):
+    def sample_outputs(self, model, sample, sample_size=-1):
         with torch.no_grad():
-            if random_samples:
+            bsz = sample['id'].size(0)
+            sample_selections = model.list_all_selections()
+            random.shuffle(sample_selections)
+            outputs = []
+
+            # negative sample_size is a shortcut for using all possible selections
+            if sample_size >= 0:
+                sample_selections = sample_selections[:sample_size]
+
                 # We run the m-step first, to get estimated outputs of
                 # the current best selections
-                net_out = model(
-                    **sample['net_input'],
-                    data_indices=sample['id'],
-                    mode="m_step")
-                sampled_outputs = [net_out]
-                for i in range(self.e_step_size):
-                    net_out = model(**sample['net_input'], mode="e_step")
-                    sampled_outputs.append(net_out)
-            else:
-                sampled_outputs = []
-                bsz = sample['id'].size(0)
-                for selection in model.list_all_selections():
-                    # expand for the whole batch
-                    for key in [k for k, v in selection.items() if v is not None]:
-                        selection[key] = selection[key].repeat(bsz, 1)
-                    net_out = model(
+                outputs.append(
+                    model(
                         **sample['net_input'],
-                        mode="e_step",
-                        fixed_selection=selection)
-                    sampled_outputs.append(net_out)
-        return sampled_outputs
+                        data_indices=sample['id'],
+                        mode='m_step',
+                    )
+                )
+
+            for selection in sample_selections:
+                for key in [k for k, v in selection.items() if v is not None]:
+                    selection[key] = selection[key].repeat(bsz, 1)
+                outputs.append(
+                    model(
+                        **sample['net_input'],
+                        mode='e_step',
+                        fixed_selection=selection,
+                    )
+                )
+            return outputs
 
     def compute_loss(self, model, net_output, sample, reduce=True):
         lprobs = model.get_normalized_probs(net_output, log_probs=True)

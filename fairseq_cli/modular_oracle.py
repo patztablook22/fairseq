@@ -192,7 +192,7 @@ def main(args):
                             selection['decoder'] = sel.repeat(sample['id'].size(0), 1)
                     else:
                         # 1. Compute outputs for every ctrl selection
-                        sampled_outputs = criterion.sample_outputs(model, sample, random_samples=False)
+                        sampled_outputs = criterion.sample_outputs(model, sample)
 
                         # 2. Take selection with the lowest loss (given true predictions)
                         selection = criterion.compute_best_selection(model, sampled_outputs, sample)
