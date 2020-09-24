@@ -1078,12 +1078,13 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
         if selections is not None:
             new_selections = []
             for sel in selections:
-                sel['encoder'] = (
-                    sel['encoder'][:, None, :]
-                    .expand(-1, self.beam_size, -1)
-                    .contiguous()
-                    .view(bsz * self.beam_size, -1)
-                )
+                if sel['encoder'] is not None:
+                    sel['encoder'] = (
+                        sel['encoder'][:, None, :]
+                        .expand(-1, self.beam_size, -1)
+                        .contiguous()
+                        .view(bsz * self.beam_size, -1)
+                    )
                 if sel['decoder'] is not None:
                     sel['decoder'] = (
                        sel['decoder'][:, None, :]
