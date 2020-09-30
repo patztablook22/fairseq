@@ -101,16 +101,20 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        # Expectation step (do not save gradients)
-        if self.step_id % (self.m_steps + 1) == 0:
-            if self.e_step_size != 0:
-                sampled_outputs = self.sample_outputs(
-                    model, sample,
-                    sample_size=self.e_step_size)
-                self.update_best_ctrl_selection(model, sampled_outputs, sample)
-        self.step_id = (self.step_id + 1) % (self.m_steps + 1)
+        if self.training:
+            # Expectation step (do not save gradients)
+            if self.step_id % (self.m_steps + 1) == 0:
+                if self.e_step_size != 0:
+                    sampled_outputs = self.sample_outputs(
+                        model, sample,
+                        sample_size=self.e_step_size)
+                    self.update_best_ctrl_selection(model, sampled_outputs, sample)
+            self.step_id = (self.step_id + 1) % (self.m_steps + 1)
 
-        net_out = model(**sample['net_input'], data_indices=sample['id'], mode="m_step")
+            net_out = model(**sample['net_input'], data_indices=sample['id'], mode='m_step')
+        else:
+            net_out = model(**sample['net_input'], mode='validation')
+
         loss, nll_loss, ctrl_loss, sel_entropy, batch_entropy = self.compute_loss(
             model, net_out, sample, reduce=reduce)
         sample_size = sample['target'].size(0) if self.sentence_avg else sample['ntokens']
@@ -247,7 +251,7 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         ctrl_loss_sum = sum(log.get('ctrl_loss', 0) for log in logging_outputs)
         sel_entropy = sum(log.get('sel_entropy', 0) for log in logging_outputs)
         batch_entropy = sum(log.get('batch_entropy', 0) for log in logging_outputs)
-        ctrl_entropy_ratio = sel_entropy / batch_entropy
+        ctrl_entropy_ratio = sel_entropy / (batch_entropy + _EPS)
         ntokens = sum(log.get('ntokens', 0) for log in logging_outputs)
         sample_size = sum(log.get('sample_size', 0) for log in logging_outputs)
         nsentences = sum(log.get('nsentences', 0) for log in logging_outputs)
