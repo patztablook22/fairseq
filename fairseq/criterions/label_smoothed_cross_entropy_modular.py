@@ -65,7 +65,14 @@ def compute_sel_lprobs(ctrl_outputs):
 @register_criterion('label_smoothed_cross_entropy_modular')
 class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
 
-    def __init__(self, task, sentence_avg, label_smoothing, ctrl_alpha, e_step_size, m_steps):
+    def __init__(self,
+                 task,
+                 sentence_avg,
+                 label_smoothing,
+                 ctrl_alpha,
+                 e_step_size,
+                 m_steps,
+                 modular_warmup_updates):
         super().__init__(task)
         self.sentence_avg = sentence_avg
         self.eps = label_smoothing
@@ -76,6 +83,9 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
 
         self.step_id = 1  # indicates when to apply e-step
         assert self.m_steps > 0
+
+        self.warmup_steps = modular_warmup_updates
+        assert self.warmup_steps >= 0
 
     @staticmethod
     def add_args(parser):
@@ -91,6 +101,8 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
                                  'ctrl configurations)')
         parser.add_argument('--m-steps', default=10, type=int, metavar='N',
                             help='number of maximization steps between the e-steps')
+        parser.add_argument('--modular-warmup-updates', default=0, type=int, metavar='N',
+                            help='number of updates without controller selection')
         # fmt: on
 
     def forward(self, model, sample, reduce=True):
@@ -102,16 +114,18 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         3) logging outputs to display while training
         """
         if self.training:
-            # Expectation step (do not save gradients)
-            if self.step_id % (self.m_steps + 1) == 0:
-                if self.e_step_size != 0:
-                    sampled_outputs = self.sample_outputs(
-                        model, sample,
-                        sample_size=self.e_step_size)
-                    self.update_best_ctrl_selection(model, sampled_outputs, sample)
-            self.step_id = (self.step_id + 1) % (self.m_steps + 1)
-
-            net_out = model(**sample['net_input'], data_indices=sample['id'], mode='m_step')
+            if self.warmup_steps > 0:
+                net_out = model(**sample['net_input'], mode='full')
+            else:
+                # Expectation step (do not save gradients)
+                if self.step_id % (self.m_steps + 1) == 0:
+                    if self.e_step_size != 0:
+                        sampled_outputs = self.sample_outputs(
+                            model, sample,
+                            sample_size=self.e_step_size)
+                        self.update_best_ctrl_selection(model, sampled_outputs, sample)
+                self.step_id = (self.step_id + 1) % (self.m_steps + 1)
+                net_out = model(**sample['net_input'], data_indices=sample['id'], mode='m_step')
         else:
             net_out = model(**sample['net_input'], mode='validation')
 
@@ -128,6 +142,10 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
             'nsentences': sample['target'].size(0),
             'sample_size': sample_size,
         }
+
+        if self.warmup_steps > 0:
+            self.warmup_steps -= 1
+
         return loss, sample_size, logging_output
 
     def sample_outputs(self, model, sample, sample_size=-1):
@@ -171,11 +189,16 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         ctrl_outputs = [
             ctrl_out for ctrl_out in net_output[1]['ctrl_output'].values()
         ]
-        sel_lprobs = compute_sel_lprobs(ctrl_outputs)
-        sel_loss = -sel_lprobs
+        sel_entropy = torch.tensor(0).to(lprobs.device)
+        batch_entropy = torch.tensor(0).to(lprobs.device)
+        if self.warmup_steps > 0:
+            sel_loss = torch.tensor(0).to(lprobs.device)
+        else:
+            sel_lprobs = compute_sel_lprobs(ctrl_outputs)
+            sel_loss = -sel_lprobs
 
-        sel_entropy = selection_entropy([c.ctrl for c in ctrl_outputs if c is not None])
-        batch_entropy = batch_selection_entropy([c.ctrl for c in ctrl_outputs if c is not None])
+            sel_entropy = selection_entropy([c.ctrl for c in ctrl_outputs if c is not None])
+            batch_entropy = batch_selection_entropy([c.ctrl for c in ctrl_outputs if c is not None])
 
         target = model.get_targets(sample, net_output).view(-1, 1)
         loss, nll_loss = label_smoothed_nll_loss(

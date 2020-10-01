@@ -243,6 +243,7 @@ class ModularCtrl(nn.Module):
         return self.fc_net(x)
 
     def forward(self, x, mode, padding_mask=None, indices=None, fixed_selection=None):
+        bsz = x.size(0)
         features = self.extract_features(x, padding_mask)
         logits = self.out_proj(features)
 
@@ -263,6 +264,11 @@ class ModularCtrl(nn.Module):
         elif mode == 'validation':
             ctrl_prediction = logits.max(-1)[1].to(x.device)
             selection = self.pred2sel(ctrl_prediction)
+        elif mode == 'full':
+            ctrl = None
+            ctrl_prediction = None
+            selection = torch.arange(self.n_modules).repeat(bsz, 1)
+            ctrl_prediction = self.sel2pred(selection)
         else:
             raise ValueError('Invalid ModuleCtrl mode: {}'.format(mode))
 
