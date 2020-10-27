@@ -306,6 +306,9 @@ class ModularCtrl(nn.Module):
 
     def sel2pred(self, selection):
         if self.subsets is not None:
+            if self.subsets.size(1) != selection.size(1):
+                # TODO: This is quite ugly workaround
+                return torch.tensor([-1]).repeat(self.subsets.size(0))
             return torch.cat(
                 [
                     torch.nonzero((s.to(self.subsets.device) == self.subsets).prod(1), as_tuple=False)
