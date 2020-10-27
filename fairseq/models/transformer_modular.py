@@ -324,6 +324,22 @@ class TransformerModularEncoder(TransformerEncoder):
     def list_all_selections(self):
         return self.module_ctrl.list_all_selections()
 
+    def forward_torchscript(self, net_input: Dict[str, Tensor]):
+        """TODO"""
+        selection = None
+        if "fixed_selection" in net_input:
+            selection = net_input["fixed_selection"]["encoder"]
+        encoder_input = net_input.copy()
+        encoder_input["fixed_selection"] = selection
+        if torch.jit.is_scripting():
+            return self.forward(
+                src_tokens=net_input["src_tokens"],
+                src_lengths=net_input["src_lengths"],
+                fixed_selection=selection
+            )
+        else:
+            return self.forward_non_torchscript(encoder_input)
+
     def forward(
         self,
         src_tokens,

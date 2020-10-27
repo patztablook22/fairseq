@@ -5,6 +5,7 @@
 
 import math
 from typing import Dict, List, Optional
+import logging
 import numpy as np
 
 import torch
@@ -14,6 +15,9 @@ from fairseq.data import data_utils
 from fairseq.models import FairseqIncrementalDecoder
 from fairseq.models.fairseq_encoder import EncoderOut
 from torch import Tensor
+
+
+logger = logging.getLogger(__name__)
 
 
 class SequenceGenerator(nn.Module):
@@ -901,6 +905,12 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
     @torch.no_grad()
     def generate(self, models, sample, selections=None, **kwargs):
         self.model.reset_incremental_state()
+
+        if selections is not None:
+            sample["net_input"]["fixed_selection"] = selections[0]
+            if len(selections) > 1:
+                logger.warn('``fixed_selections'' not supported by the EnsembleModel')
+
         finalized = super()._generate(sample, **kwargs)
 
         src_tokens = sample["net_input"]["src_tokens"]
