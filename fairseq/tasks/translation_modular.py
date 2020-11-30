@@ -10,6 +10,7 @@ import logging
 import os
 
 import numpy as np
+import torch
 
 from fairseq import metrics, options, utils
 from fairseq.data import (
@@ -27,6 +28,7 @@ from fairseq.data import (
 from fairseq.tasks import FairseqTask, register_task
 
 EVAL_BLEU_ORDER = 4
+_EPS = 1e-9
 
 
 logger = logging.getLogger(__name__)
@@ -330,6 +332,22 @@ class TranslationModularTask(FairseqTask):
                     return round(bleu.score, 2)
 
                 metrics.log_derived('bleu', compute_bleu)
+
+        for coder in ['encoder']:
+            label = coder + '_ctrl_probs'
+            if any([(label not in log) for log in logging_outputs]):
+                continue
+
+            def compute_batch_entropy(meters):
+                probs = meters['_' + label]
+                return (-probs.val * np.log(probs.val + _EPS)).mean()
+
+            probs = torch.cat([log[label].cpu() for log in logging_outputs], 0)
+            sel_entropy = (-probs * torch.log(probs + _EPS)).mean(-1)
+
+            metrics.log_scalar('_' + label, np.array(probs.mean(0)))
+            metrics.log_scalar(coder + '_ctrl_sel_entropy', np.array(sel_entropy.mean()))
+            metrics.log_derived(coder + '_ctrl_batch_entropy', compute_batch_entropy)
 
     def max_positions(self):
         """Return the max sentence length allowed by the task."""

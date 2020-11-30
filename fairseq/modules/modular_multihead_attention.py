@@ -7,6 +7,8 @@ import math
 from typing import Dict, NamedTuple, Optional, Tuple
 import logging
 import itertools
+import random
+import numpy as np
 
 import torch
 import torch.nn.init as init
@@ -27,6 +29,14 @@ logger = logging.getLogger(__name__)
 def masked_mean(x, mask, axis=None):
     x *= mask.float()
     return x.sum(axis) / (mask.sum(axis) + _EPS)
+
+
+def initialize_proportional(n, indices):
+    assert len(indices) > 0
+    if len(indices) == 1:
+        return [indices[0]] * n
+    n /= 2
+    return [indices[0]] * math.ceil(n) + initialize_proportional(int(n), indices[1:])
 
 
 class ModularLinear(nn.Module):
@@ -300,7 +310,7 @@ class ModularCtrl(nn.Module):
         raise ValueError('list_all_selections not supported for ctrl_type=="factored"')
 
     def pred2sel(self, prediction):
-        if self.subsets is not None:
+        if self.subsets is not None: 
             return self.subsets[prediction].squeeze(1)
         return prediction
 
@@ -316,11 +326,32 @@ class ModularCtrl(nn.Module):
                 ], 0)
         return selection
 
-    def initialize_best_selection(self, dataset_size):
+    def initialize_best_selection(self, dataset_size, init_scheme="uniform"):
         if self.subsets is not None:
             sel_size = self.subsets.size(0)
-            prediction = torch.LongTensor(dataset_size, 1).random_(0, sel_size)
-            self.best_selection = self.pred2sel(prediction)
+            if init_scheme == "uniform":
+                prediction = torch.LongTensor(dataset_size, 1).random_(0, sel_size)
+                self.best_selection = self.pred2sel(prediction)
+            elif init_scheme == "proportional":
+                indices = list(range(sel_size))
+                random.shuffle(indices)
+                prediction = initialize_proportional(dataset_size, indices)
+                random.shuffle(prediction)
+                prediction = torch.tensor(prediction).unsqueeze(1)
+                assert prediction.size(0) == dataset_size
+                self.best_selection = self.pred2sel(prediction)
+            else:
+                # You can initialize with a fixed selection, e.g. '(head_1,head_2)'
+                try:
+                    selection = eval(init_scheme)
+                    if type(selection) is int:
+                        selection = [selection]
+                    self.best_selection = torch.tensor(
+                        selection).unsqueeze(0).repeat(dataset_size, 1)
+                except:
+                    raise ValueError(
+                        "Unknown ModularCtrl initialization scheme "
+                        "``{}''".format(init_scheme))
         else:
             self.best_selection = torch.LongTensor(
                 dataset_size, self.n_active).random_(0, self.n_modules)
@@ -332,10 +363,17 @@ class ModularCtrl(nn.Module):
         assert self.best_selection is not None
         return self.best_selection[indices]
 
+    def get_best_selection_stats(self):
+        res = {}
+        for sel in self.best_selection:
+            sel = ",".join(sel.cpu().numpy().astype(np.str))
+            if sel not in res:
+                res[sel] = 1
+            else:
+                res[sel] += 1
+        return res
+
     def reset_parameters(self):
-        #for layer in self.fc_layers:
-        #    nn.init.xavier_uniform_(
-        #        layer.weight, gain=1 / math.sqrt(2))
         nn.init.xavier_uniform_(
             self.out_proj.weight, gain=1 / math.sqrt(2))
 
