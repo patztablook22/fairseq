@@ -175,7 +175,8 @@ def main(cfg: FairseqConfig) -> None:
 
     # NOTE: Ugly hack to initialize modular attention controller for training
     if args.arch == 'transformer_modular':
-        model.initialize_best_ctrl_selection(len(task.datasets['train']))
+        model.initialize_best_ctrl_selection(
+            len(task.datasets['train']), args.module_ctrl_init)
 
     max_epoch = cfg.optimization.max_epoch or math.inf
     lr = trainer.get_lr()
@@ -554,6 +555,13 @@ def get_valid_stats(
             checkpoint_utils.save_checkpoint.best,
             stats[cfg.checkpoint.best_checkpoint_metric],
         )
+    if getattr(cfg, "print_best_selection_stats", False):
+        sel_stats = trainer.model.get_best_selection_stats()
+        res = [" ".join(["{}-{}".format(k, v) for k, v in sel_stats["encoder"].items()])]
+        if sel_stats["decoder"] is not None:
+            res.append(" ".join(["{}-{}".format(k, v) for k, v in sel_stats["decoder"].items()]))
+        stats["best_selection_stats"] = ";".join(res)
+
     return stats
 
 

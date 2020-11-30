@@ -85,12 +85,16 @@ class TransformerModularModel(TransformerModel):
         #                    help='tuple of indices of modular layers')
         parser.add_argument('--module-ctrl-type', type=str,
                             help='type of the module controller')
+        parser.add_argument('--module-ctrl-init', type=str,
+                            help='initialization scheme for module controller')
         parser.add_argument('--module-ctrl-hidden-depth', type=int,
                             help='num of controller DAN hidden layers')
         parser.add_argument('--module-ctrl-hidden-dim', type=int,
                             help='controller DAN hidden dimension')
         parser.add_argument('--module-ctrl-word-dropout', type=float,
                             help='controller DAN word dropout')
+        parser.add_argument('--print-best-selection-stats', action='store_true',
+                            help='print the current best_selections statistics')
         # fmt: on
 
     @classmethod
@@ -155,9 +159,9 @@ class TransformerModularModel(TransformerModel):
             no_encoder_attn=getattr(args, "no_cross_attention", False),
         )
 
-    def initialize_best_ctrl_selection(self, dataset_size):
-        self.encoder.initialize_best_ctrl_selection(dataset_size)
-        self.decoder.initialize_best_ctrl_selection(dataset_size)
+    def initialize_best_ctrl_selection(self, dataset_size, init_scheme="uniform"):
+        self.encoder.initialize_best_ctrl_selection(dataset_size, init_scheme)
+        self.decoder.initialize_best_ctrl_selection(dataset_size, init_scheme)
 
     def update_best_ctrl_selection(self,
                                     selections: Dict[str, ModularCtrlOut],
@@ -166,6 +170,12 @@ class TransformerModularModel(TransformerModel):
             selections['encoder'], data_indices)
         self.decoder.update_best_ctrl_selection(
             selections['decoder'], data_indices)
+
+    def get_best_selection_stats(self):
+        return {
+            "encoder" : self.encoder.get_best_selection_stats(),
+            "decoder" : self.decoder.get_best_selection_stats(),
+        }
 
     def list_all_selections(self):
         """TODO"""
@@ -315,11 +325,14 @@ class TransformerModularEncoder(TransformerEncoder):
                 x, selection, encoder_padding_mask,
                 need_head_weights=need_head_weights)
 
-    def initialize_best_ctrl_selection(self, dataset_size):
-        self.module_ctrl.initialize_best_selection(dataset_size)
+    def initialize_best_ctrl_selection(self, dataset_size, init_scheme="uniform"):
+        self.module_ctrl.initialize_best_selection(dataset_size, init_scheme)
 
     def update_best_ctrl_selection(self, selection, data_indices):
         self.module_ctrl.update_best_selection(selection, data_indices)
+
+    def get_best_selection_stats(self):
+        return self.module_ctrl.get_best_selection_stats()
 
     def list_all_selections(self):
         return self.module_ctrl.list_all_selections()
@@ -550,13 +563,18 @@ class TransformerModularDecoder(TransformerDecoder):
                 need_head_weights=need_head_weights,
             )
 
-    def initialize_best_ctrl_selection(self, dataset_size):
+    def initialize_best_ctrl_selection(self, dataset_size, init_scheme="uniform"):
         if self.module_ctrl is not None:
-            self.module_ctrl.initialize_best_selection(dataset_size)
+            self.module_ctrl.initialize_best_selection(dataset_size, init_scheme)
 
     def update_best_ctrl_selection(self, selection, data_indices):
         if self.module_ctrl is not None:
             self.module_ctrl.update_best_selection(selection, data_indices)
+
+    def get_best_selection_stats(self):
+        if self.module_ctrl is not None:
+            return self.module_ctrl.get_best_selection_stats()
+        return None
 
     def list_all_selections(self):
         if self.module_ctrl is not None:
@@ -751,5 +769,6 @@ def transformer_modular(args):
     args.module_ctrl_word_dropout = getattr(
         args, 'module_ctrl_word_dropout', 0.0)
     args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'joint')
+    args.module_ctrl_init = getattr(args, 'module_ctrl_init', 'uniform')
 
     transformer.base_architecture(args)

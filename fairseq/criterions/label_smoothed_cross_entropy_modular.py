@@ -145,6 +145,11 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
 
         if self.warmup_steps > 0:
             self.warmup_steps -= 1
+        else:
+            logging_output['encoder_ctrl_probs'] = net_out[1]['ctrl_output']['encoder'].ctrl.probs.data
+            if net_out[1]['ctrl_output']['decoder'] is not None:
+                logging_output['decoder_ctrl_probs'] = net_out[1]['ctrl_output']['decoder'].ctrl.probs.data
+
 
         return loss, sample_size, logging_output
 
@@ -240,6 +245,7 @@ class LabelSmoothedCrossEntropyModularCriterion(FairseqCriterion):
         ctrl_outputs = [
             net_out[1]['ctrl_output'] for net_out in net_outputs
         ]
+
         sel_lprobs = torch.stack([
             compute_sel_lprobs(
                 [val for val in ctrl_out.values()]
