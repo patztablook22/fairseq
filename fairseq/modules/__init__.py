@@ -31,11 +31,8 @@ from .linearized_convolution import LinearizedConvolution
 from .location_attention import LocationAttention
 from .lstm_cell_with_zoneout import LSTMCellWithZoneOut
 from .multihead_attention import MultiheadAttention
-from .modular_multihead_attention import (
-    ModularCtrl,
-    ModularCtrlOut,
-    ModularMultiheadAttention
-)
+from .modular import ModularCtrl, ModularCtrlOut
+from .modular_multihead_attention import ModularMultiheadAttention
 from .positional_embedding import PositionalEmbedding
 from .same_pad import SamePad, SamePad2d
 from .scalar_bias import ScalarBias
