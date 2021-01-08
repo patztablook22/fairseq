@@ -287,7 +287,6 @@ class TransformerModularEncoder(TransformerEncoder):
             hidden_dim=args.module_ctrl_hidden_dim,
             dropout=self.dropout,
             word_dropout=args.module_ctrl_word_dropout,
-            activation=getattr(args, "activation_fn", "relu"),
             ctrl_type=args.module_ctrl_type)
 
         if self.encoder_layerdrop > 0.0:
@@ -506,7 +505,6 @@ class TransformerModularDecoder(TransformerDecoder):
                 hidden_dim=args.module_ctrl_hidden_dim,
                 dropout=self.dropout,
                 word_dropout=args.module_ctrl_word_dropout,
-                activation=getattr(args, "activation_fn", "relu"),
                 ctrl_type=args.module_ctrl_type)
 
         if self.decoder_layerdrop > 0.0:
@@ -760,6 +758,12 @@ def transformer_modular(args):
         args, 'decoder_attention_heads_active', args.decoder_attention_heads)
     args.decoder_modular_layer_indices = getattr(
         args, 'decoder_modular_layer_indices', '()')
+    #args.decoder_attention_heads_active = getattr(
+    #    args, 'enc_dec_attention_heads_active',
+    #    args.decoder_attention_heads_active)
+    #args.decoder_modular_layer_indices = getattr(
+    #    args, 'enc_dec_modular_layer_indices',
+    #    args.decoder_modular_layer_indices)
     args.share_encoder_ctrl = getattr(args, 'share_encoder_ctrl', False)
 
     args.module_ctrl_hidden_depth = getattr(

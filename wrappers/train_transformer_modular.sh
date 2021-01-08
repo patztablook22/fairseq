@@ -1,11 +1,11 @@
 #!/bin/bash
-
 set -e
-#set -x
 
 JOB_PRIORITY=-90
 
 EXPDIR=
+
+# General Architecture Details
 EMB_SIZE=512
 FFN_SIZE=2048
 ENC_ATT_HEADS=8
@@ -15,32 +15,30 @@ DEC_ATT_HEADS_ACTIVE=4
 ENC_MODULAR_LAYERS=""
 DEC_MODULAR_LAYERS=""
 
-LR="5e-4"
+# Training Details
+RANDOM_SEED=42
 MAX_TOKENS=4096
+DROPOUT=0.3
+LR="5e-4"
 WARMUP="4000"
 CLIP_NORM=0.0
 PATIENCE=30
 KEEP_N_CHECKPOINTS=1
 SAVE_EVERY_N_UPDATES=0
-#SAVE_EVERY_N_UPDATES=100000
-#LR=0.00024
-#MAX_TOKENS=2048
 
-DROPOUT=0.3
-RANDOM_SEED=42
+# Modular Details
 N_SAMPLES=10
 M_STEPS=10
 CTRL_ALPHA=1.0
 CTRL_DEPTH=0
-#CTRL_DIM=2048
-CTRL_DIM=512
+CTRL_DIM=$EMB_SIZE
 CTRL_DROP=0.0
 CTRL_TYPE="joint"
 CTRL_INIT="uniform"
 SHARE_CTRL_OPT=""
 HP_KEYS="module_ctrl_hidden_depth,encoder_attention_heads_active,decoder_attention_heads_active,e_step_size,m_steps,clip_norm,dropout,module_ctrl_word_dropout,share_encoder_ctrl"
 
-HELP=0
+HELP=1
 while [[ $# -gt 0 ]]
 do
 key="$1"
@@ -150,13 +148,12 @@ case $key in
         shift
     ;;
     -h|--help)
-        HELP=1
+        HELP=0
         shift
     ;;
     *)
         echo Unknown option '"'$key'"' >&2
         exit 1
-        # unknown option
     ;;
 esac
 shift
@@ -164,13 +161,13 @@ done
 
 [[ -d "$EXPDIR" ]] || exit 1
 
+# TODO print help
 
 enc_mod_layers=`echo $ENC_MODULAR_LAYERS | sed 's/,/-/g'`
 dec_mod_layers=`echo $DEC_MODULAR_LAYERS | sed 's/,/-/g'`
 ctrl_init_indices=`echo $CTRL_INIT | sed 's/,/-/g;s/^(//;s/)$//'`
 
 
-# small: 4000 warmup, 5e-4 lr
 MODEL_DIR="$EXPDIR/transformer_modular"
 MODEL_DIR="$MODEL_DIR.seed-$RANDOM_SEED"
 #MODEL_DIR="$MODEL_DIR.warmup-$WARMUP"
@@ -201,8 +198,6 @@ fi
 [[ -d $MODEL_DIR ]] && rm -r $MODEL_DIR
 
 
-#qsubmit \
-#    --queue="gpu-troja.q" \
 qsubmit \
     --logdir=$MODEL_DIR/logs \
     --jobname=tformer_mod \

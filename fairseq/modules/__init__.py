@@ -23,11 +23,8 @@ from .learned_positional_embedding import LearnedPositionalEmbedding
 from .lightweight_convolution import LightweightConv, LightweightConv1dTBC
 from .linearized_convolution import LinearizedConvolution
 from .multihead_attention import MultiheadAttention
-from .modular_multihead_attention import (
-    ModularCtrl,
-    ModularCtrlOut,
-    ModularMultiheadAttention
-)
+from .modular import ModularCtrl, ModularCtrlOut
+from .modular_multihead_attention import ModularMultiheadAttention
 from .positional_embedding import PositionalEmbedding
 from .scalar_bias import ScalarBias
 from .sinusoidal_positional_embedding import SinusoidalPositionalEmbedding
