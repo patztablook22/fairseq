@@ -24,11 +24,8 @@ from fairseq.models.transformer import (
 )
 from fairseq.models.fairseq_encoder import EncoderOut
 from fairseq.modules import (
-    ModularCtrl,
     ModularCtrlOut,
     SinusoidalPositionalEmbedding,
-    TransformerEncoderLayer,
-    TransformerDecoderLayer,
     TransformerModularEncoderLayer,
     TransformerModularDecoderLayer
 )
@@ -66,34 +63,19 @@ class TransformerModularModel(TransformerModel):
         """Add model-specific arguments to the parser."""
         # fmt: off
         super(TransformerModularModel, TransformerModularModel).add_args(parser)
-        parser.add_argument('--encoder-attention-heads-active', type=int,
-                            metavar='N',
-                            help='number of active att. heads per input')
-        parser.add_argument('--encoder-modular-layer-indices',
-                            help='tuple of indices of modular layers')
-        parser.add_argument('--decoder-attention-heads-active', type=int,
-                            metavar='N',
-                            help='number of active att. heads per input')
-        parser.add_argument('--decoder-modular-layer-indices',
-                            help='tuple of indices of modular layers')
-        parser.add_argument('--share-encoder-ctrl', action='store_true',
-                            help='share encoder controller with decoder')
-        #parser.add_argument('--enc-dec-attention-heads-active', type=int,
-        #                    metavar='N',
-        #                    help='number of active att. heads per input')
-        #parser.add_argument('--enc-dec-modular-layer-indices',
-        #                    help='tuple of indices of modular layers')
-        parser.add_argument('--module-ctrl-type', type=str,
-                            help='type of the module controller')
-        parser.add_argument('--module-ctrl-init', type=str,
-                            help='initialization scheme for module controller')
+        parser.add_argument('--modular-type', type=str,
+                            help='type of TransformerModular layer to be used')
+        parser.add_argument('--modular-avg-tokens', action='store_true',
+                            help='average controler input sequence')
+        #parser.add_argument('--share-encoder-ctrl', action='store_true',
+        #                    help='share encoder controller with decoder')
         parser.add_argument('--module-ctrl-hidden-depth', type=int,
-                            help='num of controller DAN hidden layers')
+                            help='num of controller hidden layers')
         parser.add_argument('--module-ctrl-hidden-dim', type=int,
-                            help='controller DAN hidden dimension')
+                            help='controller hidden dimension size')
         parser.add_argument('--module-ctrl-word-dropout', type=float,
-                            help='controller DAN word dropout')
-        parser.add_argument('--print-best-selection-stats', action='store_true',
+                            help='controller word dropout')
+        parser.add_argument('--print-module-mask', action='store_true',
                             help='print the current best_selections statistics')
         # fmt: on
 
@@ -159,53 +141,12 @@ class TransformerModularModel(TransformerModel):
             no_encoder_attn=getattr(args, "no_cross_attention", False),
         )
 
-    def initialize_best_ctrl_selection(self, dataset_size, init_scheme="uniform"):
-        self.encoder.initialize_best_ctrl_selection(dataset_size, init_scheme)
-        self.decoder.initialize_best_ctrl_selection(dataset_size, init_scheme)
-
-    def update_best_ctrl_selection(self,
-                                    selections: Dict[str, ModularCtrlOut],
-                                    data_indices):
-        self.encoder.update_best_ctrl_selection(
-            selections['encoder'], data_indices)
-        self.decoder.update_best_ctrl_selection(
-            selections['decoder'], data_indices)
-
-    def get_best_selection_stats(self):
-        return {
-            "encoder" : self.encoder.get_best_selection_stats(),
-            "decoder" : self.decoder.get_best_selection_stats(),
-        }
-
-    def list_all_selections(self):
-        """TODO"""
-        enc_pred = self.encoder.list_all_selections()
-        dec_pred = self.decoder.list_all_selections()
-        res = []
-        for ep in enc_pred:
-            pred = {'encoder': ep}
-            if dec_pred is not None:
-                for dp in dec_pred:
-                    pred['decoder'] = dp
-                    res.append({
-                        'encoder': ep,
-                        'decoder': dp,
-                    })
-            else:
-                res.append({
-                    'encoder': ep,
-                    'decoder': None,
-                })
-        return res
-
     def forward(
         self,
         src_tokens,
         src_lengths,
         prev_output_tokens,
-        mode: str = None,
-        data_indices: Optional[Tensor] = None,
-        fixed_selection: Optional[Dict[str, Tensor]] = None,
+        module_mask: Optional[Dict[str, Tensor]] = None,
         return_all_hiddens: bool = True,
         features_only: bool = False,
         alignment_layer: Optional[int] = None,
@@ -214,31 +155,16 @@ class TransformerModularModel(TransformerModel):
         """
         TODO: mode/indices description
         """
-        if fixed_selection is None:
-            fixed_selection = {
-                'encoder' : None,
-                'decoder' : None,
-            }
-        else:
-            if 'encoder' not in fixed_selection:
-                fixed_selection['encoder'] = None
-            if 'decoder' not in fixed_selection:
-                fixed_selection['decoder'] = None
-
         encoder_out = self.encoder(
             src_tokens,
             src_lengths=src_lengths,
-            mode=mode,
-            data_indices=data_indices,
-            fixed_selection=fixed_selection['encoder'],
+            module_mask=module_mask,
             return_all_hiddens=return_all_hiddens,
         )
         x, extra = self.decoder(
             prev_output_tokens,
             encoder_out=encoder_out,
-            mode=mode,
-            data_indices=data_indices,
-            fixed_selection=fixed_selection['decoder'],
+            module_mask=module_mask,
             features_only=features_only,
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
@@ -275,119 +201,36 @@ class TransformerModularEncoder(TransformerEncoder):
         dictionary (~fairseq.data.Dictionary): encoding dictionary
         embed_tokens (torch.nn.Embedding): input embedding
     """
-
-    def __init__(self, args, dictionary, embed_tokens):
-        super().__init__(args, dictionary, embed_tokens)
-
-        self.module_ctrl = ModularCtrl(
-            args.encoder_embed_dim,
-            args.encoder_attention_heads,
-            args.encoder_attention_heads_active,
-            hidden_depth=args.module_ctrl_hidden_depth,
-            hidden_dim=args.module_ctrl_hidden_dim,
-            dropout=self.dropout,
-            word_dropout=args.module_ctrl_word_dropout,
-            ctrl_type=args.module_ctrl_type)
-
-        if self.encoder_layerdrop > 0.0:
-            self.layers = LayerDropModuleList(p=self.encoder_layerdrop)
-        else:
-            self.layers = nn.ModuleList([])
-        self.layers.extend([
-            self.build_encoder_layer(args, i)
-            for i in range(args.encoder_layers)
-        ])
-        self.num_layers = len(self.layers)
-
-    def build_encoder_layer(self, args, i=None):
-        modular_layer_indices = eval(args.encoder_modular_layer_indices)
-        if type(modular_layer_indices) is int:
-            modular_layer_indices = [modular_layer_indices]
-
-        if i in modular_layer_indices:
-            return TransformerModularEncoderLayer(args)
-        else:
-            return TransformerEncoderLayer(args)
-
-    def forward_layer_wrapper(self,
-                              layer,
-                              x,
-                              selection,
-                              encoder_padding_mask,
-                              need_head_weights):
-        if not isinstance(layer, TransformerModularEncoderLayer):
-            return layer(
-                x, encoder_padding_mask,
-                need_head_weights=need_head_weights)
-        else:
-            return layer(
-                x, selection, encoder_padding_mask,
-                need_head_weights=need_head_weights)
-
-    def initialize_best_ctrl_selection(self, dataset_size, init_scheme="uniform"):
-        self.module_ctrl.initialize_best_selection(dataset_size, init_scheme)
-
-    def update_best_ctrl_selection(self, selection, data_indices):
-        self.module_ctrl.update_best_selection(selection, data_indices)
-
-    def get_best_selection_stats(self):
-        return self.module_ctrl.get_best_selection_stats()
-
-    def list_all_selections(self):
-        return self.module_ctrl.list_all_selections()
-
-    def forward_torchscript(self, net_input: Dict[str, Tensor]):
-        """TODO"""
-        selection = None
-        if "fixed_selection" in net_input:
-            selection = net_input["fixed_selection"]["encoder"]
-        encoder_input = net_input.copy()
-        encoder_input["fixed_selection"] = selection
-        if torch.jit.is_scripting():
-            return self.forward(
-                src_tokens=net_input["src_tokens"],
-                src_lengths=net_input["src_lengths"],
-                fixed_selection=selection
-            )
-        else:
-            return self.forward_non_torchscript(encoder_input)
+    def build_encoder_layer(self, args):
+        return TransformerModularEncoderLayer(args)
 
     def forward(
         self,
         src_tokens,
         src_lengths,
-        mode: str = None,
-        data_indices: Optional[Tensor] = None,
-        fixed_selection: Optional[Tensor] = None,
+        module_mask: Optional[Tensor] = None,
         return_all_hiddens: bool = False,
     ):
         """
         TODO: mode/indices description
         """
-        if mode is None:
-            #logger.warning('ctrl mode==None in forward method, using mode=validation as default')
-            mode = 'validation'
-
         x, encoder_embedding = self.forward_embedding(src_tokens)
-
-        self_attn_weights = []
-
-        # compute padding mask
-        encoder_padding_mask = src_tokens.eq(self.padding_idx)
-
-        # produce module selection
-        ctrl_out = self.module_ctrl(x, mode, encoder_padding_mask, data_indices, fixed_selection)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
+        # compute padding mask
+        encoder_padding_mask = src_tokens.eq(self.padding_idx)
+
         encoder_states = [] if return_all_hiddens else None
+        attn_weights = []
 
         # encoder layers
         for layer in self.layers:
-            x, attn_w = self.forward_layer_wrapper(
-                layer, x, ctrl_out.selection, encoder_padding_mask, need_head_weights=True)
-            self_attn_weights.append(attn_w)
+            x, attn_w, ctrl_out = layer(
+                x, module_mask, encoder_padding_mask,
+                need_head_weights=True)
+            attn_weights.append(attn_w)
             if return_all_hiddens:
                 assert encoder_states is not None
                 encoder_states.append(x)
@@ -400,9 +243,9 @@ class TransformerModularEncoder(TransformerEncoder):
             encoder_padding_mask=encoder_padding_mask,  # B x T
             encoder_embedding=encoder_embedding,  # B x T x C
             encoder_states=encoder_states,  # List[T x B x C]
+            enc_self_attn_weights=attn_weights,
             src_tokens=None,
             src_lengths=None,
-            enc_self_attn_weights=self_attn_weights,
             ctrl_output=ctrl_out,
         )
 
@@ -450,11 +293,8 @@ class TransformerModularEncoder(TransformerEncoder):
 
         ctrl_output = encoder_out.ctrl_output
         if ctrl_output is not None:
-            new_ctrl = Categorical(
-                logits=ctrl_output.ctrl.logits.index_select(0, new_order))
-            new_selection = ctrl_output.selection.to(ctrl_output.ctrl_prediction.device)
-            new_selection = new_selection.index_select(0, new_order)
-            new_ctrl_prediction = ctrl_output.ctrl_prediction.index_select(0, new_order)
+            new_logits = ctrl_output.logits.index_select(1, new_order)
+            new_mask = ctrl_output.mask.index_select(1, new_order)
 
         # TODO: Should we also reorder attn_weights?
         return EncoderModularOut(
@@ -466,9 +306,8 @@ class TransformerModularEncoder(TransformerEncoder):
             src_tokens=src_tokens,  # B x T
             src_lengths=src_lengths,  # B x 1
             ctrl_output=ModularCtrlOut(
-                ctrl=new_ctrl,
-                selection=new_selection,
-                ctrl_prediction=new_ctrl_prediction,
+                logits=new_logits,
+                mask=new_mask,
             ),
         )
 
@@ -484,113 +323,19 @@ class TransformerModularDecoder(TransformerDecoder):
         no_encoder_attn (bool, optional): whether to attend to encoder outputs
             (default: False).
     """
-
-    def __init__(self, args, dictionary, embed_tokens, no_encoder_attn=False):
-        super().__init__(args, dictionary, embed_tokens, no_encoder_attn)
-
-        self.share_encoder_ctrl = args.share_encoder_ctrl
-
-        if self.share_encoder_ctrl:
-            assert (
-                args.encoder_attention_heads_active == args.decoder_attention_heads_active
-                and args.encoder_attention_heads == args.decoder_attention_heads
-            )
-            self.module_ctrl = None
-        else:
-            self.module_ctrl = ModularCtrl(
-                args.decoder_embed_dim,
-                args.decoder_attention_heads,
-                args.decoder_attention_heads_active,
-                hidden_depth=args.module_ctrl_hidden_depth,
-                hidden_dim=args.module_ctrl_hidden_dim,
-                dropout=self.dropout,
-                word_dropout=args.module_ctrl_word_dropout,
-                ctrl_type=args.module_ctrl_type)
-
-        if self.decoder_layerdrop > 0.0:
-            self.layers = LayerDropModuleList(p=self.decoder_layerdrop)
-        else:
-            self.layers = nn.ModuleList([])
-        self.layers.extend([
-            self.build_decoder_layer(args, i, no_encoder_attn)
-            for i in range(args.decoder_layers)
-        ])
-        self.num_layers = len(self.layers)
-
-    def build_decoder_layer(self, args, i=None, no_encoder_attn=False):
-        modular_layer_indices = eval(args.decoder_modular_layer_indices)
-        if type(modular_layer_indices) is int:
-            modular_layer_indices = [modular_layer_indices]
-
-        if i in modular_layer_indices:
-            return TransformerModularDecoderLayer(args, no_encoder_attn)
-        else:
-            return TransformerDecoderLayer(args, no_encoder_attn)
-
-    def forward_layer_wrapper(self,
-                              layer,
-                              x,
-                              encoder_out,
-                              selection,
-                              incremental_state,
-                              self_attn_mask,
-                              self_attn_padding_mask,
-                              need_attn,
-                              need_head_weights):
-        if not isinstance(layer, TransformerModularDecoderLayer):
-            return layer(
-                x,
-                encoder_out.encoder_out if encoder_out is not None else None,
-                encoder_out.encoder_padding_mask if encoder_out is not None else None,
-                incremental_state,
-                self_attn_mask=self_attn_mask,
-                self_attn_padding_mask=self_attn_padding_mask,
-                need_attn=need_attn,
-                need_head_weights=need_head_weights,
-            )
-        else:
-            return layer(
-                x,
-                selection,
-                encoder_out.encoder_out if encoder_out is not None else None,
-                encoder_out.encoder_padding_mask if encoder_out is not None else None,
-                incremental_state,
-                self_attn_mask=self_attn_mask,
-                self_attn_padding_mask=self_attn_padding_mask,
-                need_attn=need_attn,
-                need_head_weights=need_head_weights,
-            )
-
-    def initialize_best_ctrl_selection(self, dataset_size, init_scheme="uniform"):
-        if self.module_ctrl is not None:
-            self.module_ctrl.initialize_best_selection(dataset_size, init_scheme)
-
-    def update_best_ctrl_selection(self, selection, data_indices):
-        if self.module_ctrl is not None:
-            self.module_ctrl.update_best_selection(selection, data_indices)
-
-    def get_best_selection_stats(self):
-        if self.module_ctrl is not None:
-            return self.module_ctrl.get_best_selection_stats()
-        return None
-
-    def list_all_selections(self):
-        if self.module_ctrl is not None:
-            return self.module_ctrl.list_all_selections()
-        return None
+    def build_decoder_layer(self, args, no_encoder_attn=False):
+        return TransformerModularDecoderLayer(args, no_encoder_attn)
 
     def forward(
         self,
         prev_output_tokens,
         encoder_out: Optional[EncoderOut] = None,
-        mode: str = None,
-        data_indices: Optional[Tensor] = None,
-        fixed_selection: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         features_only: bool = False,
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
         src_lengths: Optional[Any] = None,
+        module_mask: Optional[Dict[str, Tensor]] = None,
         return_all_hiddens: bool = False,
     ):
         """
@@ -601,12 +346,10 @@ class TransformerModularDecoder(TransformerDecoder):
         x, extra = self.extract_features(
             prev_output_tokens,
             encoder_out=encoder_out,
-            mode=mode,
-            data_indices=data_indices,
-            fixed_selection=fixed_selection,
             incremental_state=incremental_state,
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
+            module_mask=module_mask,
         )
         if not features_only:
             x = self.output_layer(x)
@@ -616,22 +359,17 @@ class TransformerModularDecoder(TransformerDecoder):
         self,
         prev_output_tokens,
         encoder_out: Optional[EncoderOut] = None,
-        mode: str = None,
-        data_indices: Optional[Tensor] = None,
-        fixed_selection: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         full_context_alignment: bool = False,
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
+        module_mask: Optional[Dict[str, Tensor]] = None,
     ):
         """
         Args:
             mode: TODO
             indices: TODO
         """
-        if mode is None:
-            #logger.warning('ctrl mode==None in forward method, using mode=validation as default')
-            mode = 'validation'
 
         if alignment_layer is None:
             alignment_layer = self.num_layers - 1
@@ -670,21 +408,6 @@ class TransformerModularDecoder(TransformerDecoder):
         self_attn_weights = []
         enc_attn_weights = []
 
-        if self.module_ctrl is not None:
-            # encoder_out is T x B x C
-            ctrl_out = self.module_ctrl(
-                encoder_out.encoder_out.transpose(0, 1),
-                mode,
-                padding_mask=encoder_out.encoder_padding_mask,
-                indices=data_indices,
-                fixed_selection=fixed_selection)
-        else:
-            if fixed_selection is not None:
-                logger.warning(
-                    'Decoder ``fixed_selection'' forward param ignored due to '
-                    '--shared-encoder-ctrl==True')
-            ctrl_out = encoder_out.ctrl_output
-
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
@@ -701,14 +424,14 @@ class TransformerModularDecoder(TransformerDecoder):
             else:
                 self_attn_mask = None
 
-            x, self_attn, enc_attn, _ = self.forward_layer_wrapper(
-                layer,
+            x, self_attn, enc_attn, _, ctrl_out = layer(
                 x,
-                encoder_out,
-                ctrl_out.selection,
+                module_mask,
+                encoder_out.encoder_out if encoder_out is not None else None,
+                encoder_out.encoder_padding_mask if encoder_out is not None else None,
                 incremental_state,
-                self_attn_mask,
-                self_attn_padding_mask,
+                self_attn_mask=self_attn_mask,
+                self_attn_padding_mask=self_attn_padding_mask,
                 need_attn=bool((idx == alignment_layer)),
                 need_head_weights=bool((idx == alignment_layer)),
             )
@@ -744,7 +467,7 @@ class TransformerModularDecoder(TransformerDecoder):
             "attn": [attn],
             "attn_weights": attn_weights,
             "inner_states": inner_states,
-            "ctrl_output": {"decoder": ctrl_out if self.module_ctrl is not None else None},
+            "ctrl_output": ctrl_out,
         }
 
 
@@ -752,19 +475,17 @@ class TransformerModularDecoder(TransformerDecoder):
 def transformer_modular(args):
     args.encoder_attention_heads_active = getattr(
         args, 'encoder_attention_heads_active', args.encoder_attention_heads)
-    args.encoder_modular_layer_indices = getattr(
-        args, 'encoder_modular_layer_indices', '()')
     args.decoder_attention_heads_active = getattr(
         args, 'decoder_attention_heads_active', args.decoder_attention_heads)
-    args.decoder_modular_layer_indices = getattr(
-        args, 'decoder_modular_layer_indices', '()')
     #args.decoder_attention_heads_active = getattr(
     #    args, 'enc_dec_attention_heads_active',
     #    args.decoder_attention_heads_active)
     #args.decoder_modular_layer_indices = getattr(
     #    args, 'enc_dec_modular_layer_indices',
     #    args.decoder_modular_layer_indices)
-    args.share_encoder_ctrl = getattr(args, 'share_encoder_ctrl', False)
+    args.modular_type = getattr(args, 'modular_type', 'attention')
+    args.modular_avg_tokens = getattr(args, 'modular_avg_tokens', False)
+    #args.share_encoder_ctrl = getattr(args, 'share_encoder_ctrl', False)
 
     args.module_ctrl_hidden_depth = getattr(
         args, 'module_ctrl_hidden_depth', 0)
@@ -772,7 +493,5 @@ def transformer_modular(args):
         args, 'module_ctrl_hidden_dim', None)
     args.module_ctrl_word_dropout = getattr(
         args, 'module_ctrl_word_dropout', 0.0)
-    args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'joint')
-    args.module_ctrl_init = getattr(args, 'module_ctrl_init', 'uniform')
 
     transformer.base_architecture(args)

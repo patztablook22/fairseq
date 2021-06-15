@@ -383,15 +383,17 @@ class TranslationTask(FairseqTask):
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
         if self.cfg.eval_bleu:
-            bleu = self._inference_with_bleu(self.sequence_generator, sample, model)
-            logging_output["_bleu_sys_len"] = bleu.sys_len
-            logging_output["_bleu_ref_len"] = bleu.ref_len
+            bleu, ter, acc = self._inference_with_bleu(self.sequence_generator, sample, model)
+            logging_output['_bleu_sys_len'] = bleu.sys_len
+            logging_output['_bleu_ref_len'] = bleu.ref_len
             # we split counts into separate entries so that they can be
             # summed efficiently across workers using fast-stat-sync
             assert len(bleu.counts) == EVAL_BLEU_ORDER
             for i in range(EVAL_BLEU_ORDER):
-                logging_output["_bleu_counts_" + str(i)] = bleu.counts[i]
-                logging_output["_bleu_totals_" + str(i)] = bleu.totals[i]
+                logging_output['_bleu_counts_' + str(i)] = bleu.counts[i]
+                logging_output['_bleu_totals_' + str(i)] = bleu.totals[i]
+            logging_output['accuracy'] = acc
+            logging_output['ter'] = ter.score
         return loss, sample_size, logging_output
 
     def reduce_metrics(self, logging_outputs, criterion):
@@ -445,7 +447,11 @@ class TranslationTask(FairseqTask):
                     )
                     return round(bleu.score, 2)
 
-                metrics.log_derived("bleu", compute_bleu)
+                metrics.log_derived('bleu', compute_bleu)
+        if self.args.eval_acc:
+            metrics.log_scalar('accuracy', sum_logs('accuracy'))
+        if self.args.eval_ter:
+            metrics.log_scalar('ter', sum_logs('ter'))
 
     def max_positions(self):
         """Return the max sentence length allowed by the task."""
@@ -493,6 +499,14 @@ class TranslationTask(FairseqTask):
             logger.info("example hypothesis: " + hyps[0])
             logger.info("example reference: " + refs[0])
         if self.cfg.eval_tokenized_bleu:
-            return sacrebleu.corpus_bleu(hyps, [refs], tokenize="none")
+            return (
+                sacrebleu.corpus_bleu(hyps, [refs], tokenize='none'),
+                sacrebleu.corpus_ter(hyps, [refs]),
+                sum([float(h == r) for h, r in zip(hyps, refs)]) / len(hyps)
+            )
         else:
-            return sacrebleu.corpus_bleu(hyps, [refs])
+            return (
+                sacrebleu.corpus_bleu(hyps, [refs]),
+                sacrebleu.corpus_ter(hyps, [refs]),
+                sum([float(h == r) for h, r in zip(hyps, refs)]) / len(hyps)
+            )

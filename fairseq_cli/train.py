@@ -173,11 +173,6 @@ def main(cfg: FairseqConfig) -> None:
 
         xm.rendezvous("load_checkpoint")  # wait for all workers
 
-    # NOTE: Ugly hack to initialize modular attention controller for training
-    if args.arch == 'transformer_modular':
-        model.initialize_best_ctrl_selection(
-            len(task.datasets['train']), args.module_ctrl_init)
-
     max_epoch = cfg.optimization.max_epoch or math.inf
     lr = trainer.get_lr()
 

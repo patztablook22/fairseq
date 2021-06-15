@@ -10,7 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from fairseq import utils
 from fairseq.modules import (
-    ModularMultiheadAttention,
+    ModularCtrl,
+    ModularCtrlOut,
+    MaskedMultiheadAttention,
     TransformerEncoderLayer,
     TransformerDecoderLayer,
 )
@@ -24,8 +26,19 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
     Args:
         args (argparse.Namespace): parsed command-line arguments
     """
+    def __init__(self, args):
+        super().__init__(args)
+        self.ctrl_self = ModularCtrl(
+            args.encoder_embed_dim,
+            args.encoder_attention_heads,
+            hidden_depth=args.module_ctrl_hidden_depth,
+            hidden_dim=args.module_ctrl_hidden_dim,
+            dropout=args.dropout,
+            word_dropout=args.module_ctrl_word_dropout,
+            averaged_tokens=args.modular_avg_tokens)
+
     def build_self_attention(self, embed_dim, args):
-        return ModularMultiheadAttention(
+        return MaskedMultiheadAttention(
             embed_dim,
             args.encoder_attention_heads,
             dropout=args.attention_dropout,
@@ -37,7 +50,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
     def forward(
         self,
         x,
-        selection: Tensor,
+        module_mask: Tensor,
         encoder_padding_mask,
         attn_mask: Optional[Tensor] = None,
         need_head_weights: bool = False):
@@ -46,7 +59,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             x (Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
             encoder_padding_mask (ByteTensor): binary ByteTensor of shape
                 `(batch, src_len)` where padding elements are indicated by ``1``.
-            selection: TODO
+            module_mask: TODO
             attn_mask (ByteTensor): binary tensor of shape (T_tgt, T_src), where
             T_tgt is the length of query, while T_src is the length of key,
             though here both query and key is x here,
@@ -73,11 +86,18 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         # will become -inf, which results in NaN in model parameters
         # TODO: to formally solve this problem, we need to change fairseq's
         # MultiheadAttention. We will do this later on.
+        self_mod_mask = module_mask
+        if self_mod_mask is None:
+            ctrl_out = self.ctrl_self(x, encoder_padding_mask)
+            self_mod_mask = ctrl_out.mask
+
         x, attn_weights = self.self_attn(
-            query=x, key=x, value=x, selection=selection, attn_mask=attn_mask,
+            query=x, key=x, value=x, module_mask=self_mod_mask,
+            attn_mask=attn_mask,
             key_padding_mask=encoder_padding_mask,
             need_head_weights=need_head_weights
         )
+
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         if not self.normalize_before:
@@ -94,7 +114,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
-        return x, attn_weights
+        return x, attn_weights, ctrl_out
 
 
 class TransformerModularDecoderLayer(TransformerDecoderLayer):
@@ -104,12 +124,34 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
     Args:
         args (argparse.Namespace): parsed command-line arguments
     """
+    def __init__(
+        self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
+    ):
+        super().__init__(args, no_encoder_attn, add_bias_kv, add_zero_attn)
+        self.ctrl_self = ModularCtrl(
+            args.decoder_embed_dim,
+            args.decoder_attention_heads,
+            hidden_depth=args.module_ctrl_hidden_depth,
+            hidden_dim=args.module_ctrl_hidden_dim,
+            dropout=args.dropout,
+            word_dropout=args.module_ctrl_word_dropout,
+            averaged_tokens=args.modular_avg_tokens)
+
+        self.ctrl_enc = ModularCtrl(
+            args.decoder_embed_dim,
+            args.decoder_attention_heads,
+            hidden_depth=args.module_ctrl_hidden_depth,
+            hidden_dim=args.module_ctrl_hidden_dim,
+            dropout=args.dropout,
+            word_dropout=args.module_ctrl_word_dropout,
+            averaged_tokens=args.modular_avg_tokens)
+
     def build_self_attention(self,
                              embed_dim,
                              args,
                              add_bias_kv=False,
                              add_zero_attn=False):
-        return ModularMultiheadAttention(
+        return MaskedMultiheadAttention(
             embed_dim,
             args.decoder_attention_heads,
             dropout=args.attention_dropout,
@@ -121,7 +163,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         )
 
     def build_encoder_attention(self, embed_dim, args):
-        return ModularMultiheadAttention(
+        return MaskedMultiheadAttention(
             embed_dim,
             args.decoder_attention_heads,
             kdim=getattr(args, "encoder_embed_dim", None),
@@ -138,7 +180,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
     def forward(
         self,
         x,
-        selection: torch.Tensor,
+        module_mask: torch.Tensor,
         encoder_out: Optional[torch.Tensor] = None,
         encoder_padding_mask: Optional[torch.Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
@@ -152,7 +194,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         """
         Args:
             x (Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
-            selection: TODO
+            module_mask: TODO
             encoder_padding_mask (ByteTensor, optional): binary
                 ByteTensor of shape `(batch, src_len)` where padding
                 elements are indicated by ``1``.
@@ -204,16 +246,23 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         else:
             y = x
 
-        x, attn_self = self.self_attn(
+        self_mod_mask = module_mask
+        if self_mod_mask is None:
+            ctrl_self_out = self.ctrl_self(x, self_attn_padding_mask)
+            self_mod_mask = ctrl_self_out.mask
+
+        x, attn_weights_self = self.self_attn(
             query=x,
             key=y,
             value=y,
-            selection=selection,
+            module_mask=self_mod_mask,
             key_padding_mask=self_attn_padding_mask,
             incremental_state=incremental_state,
             need_weights=False,
+            need_head_weights=need_head_weights,
             attn_mask=self_attn_mask,
         )
+
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         if not self.normalize_before:
@@ -234,17 +283,23 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                 assert incremental_state is not None
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
 
-            x, attn_enc = self.encoder_attn(
+            enc_mod_mask = module_mask
+            if enc_mod_mask is None:
+                ctrl_enc_out = self.ctrl_enc(x, self_attn_padding_mask)
+                enc_mod_mask = ctrl_enc_out.mask
+
+            x, attn_weights_enc = self.encoder_attn(
                 query=x,
                 key=encoder_out,
                 value=encoder_out,
-                selection=selection,
+                module_mask=enc_mod_mask,
                 key_padding_mask=encoder_padding_mask,
                 incremental_state=incremental_state,
                 static_kv=True,
                 need_weights=need_attn or (not self.training and self.need_attn),
                 need_head_weights=need_head_weights,
             )
+
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = residual + x
             if not self.normalize_before:
@@ -272,5 +327,11 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                 ]
             else:
                 self_attn_state = [saved_state["prev_key"], saved_state["prev_value"]]
-            return x, attn_self, attn_enc, self_attn_state
-        return x, attn_self, attn_enc, None
+            return (
+                x, attn_weights_self, attn_weights_enc, self_attn_state,
+                {"decoder": ctrl_self_out, "encoder_decoder": ctrl_enc_out}
+            )
+        return (
+            x, attn_weights_self, attn_weights_enc, None,
+            {"decoder": ctrl_self_out, "encoder_decoder": ctrl_enc_out}
+        )
