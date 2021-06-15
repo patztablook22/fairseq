@@ -226,8 +226,6 @@ def _main(args, output_file):
                         print('Menc-{}\t{}'.format(sample_id, hypo['enc_selection']), file=output_file)
                     if 'dec_selection' in hypo:
                         print('Mdec-{}\t{}'.format(sample_id, hypo['dec_selection']), file=output_file)
-                    if args.print_attn_confidence:
-                        print('C-{}\t{}'.format(sample_id, hypo['enc_self_attn_conf']), file=output_file)
 
                     if getattr(args, 'retain_iter_history', False):
                         for step, h in enumerate(hypo['history']):

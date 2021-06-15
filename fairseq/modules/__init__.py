@@ -24,7 +24,7 @@ from .lightweight_convolution import LightweightConv, LightweightConv1dTBC
 from .linearized_convolution import LinearizedConvolution
 from .multihead_attention import MultiheadAttention
 from .modular import ModularCtrl, ModularCtrlOut
-from .modular_multihead_attention import ModularMultiheadAttention
+from .masked_multihead_attention import MaskedMultiheadAttention
 from .positional_embedding import PositionalEmbedding
 from .scalar_bias import ScalarBias
 from .sinusoidal_positional_embedding import SinusoidalPositionalEmbedding
@@ -64,7 +64,8 @@ __all__ = [
     'LinearizedConvolution',
     'MultiheadAttention',
     'ModularCtrl',
-    'ModularMultiheadAttention',
+    'ModularCtrlOut',
+    'MaskedMultiheadAttention',
     'PositionalEmbedding',
     'ScalarBias',
     'SinusoidalPositionalEmbedding',

@@ -241,7 +241,8 @@ class FairseqTask(object):
         from fairseq.sequence_generator import (
             SequenceGenerator,
             SequenceGeneratorWithAlignment,
-            SequenceGeneratorWithSelection
+            SequenceGeneratorWithModuleMask,
+            SequenceGeneratorWithAttentionWeights
         )
 
         # Choose search strategy. Defaults to Beam Search.
@@ -296,8 +297,10 @@ class FairseqTask(object):
 
         if getattr(args, "print_alignment", False):
             seq_gen_cls = SequenceGeneratorWithAlignment
-        elif getattr(args, 'print_selection', False):
-            seq_gen_cls = SequenceGeneratorWithSelection
+        elif getattr(args, 'print_module_mask', False):
+            seq_gen_cls = SequenceGeneratorWithModuleMask
+        elif getattr(args, 'print_attention_weights', False):
+            seq_gen_cls = SequenceGeneratorWithAttentionWeights
         else:
             seq_gen_cls = SequenceGenerator
 

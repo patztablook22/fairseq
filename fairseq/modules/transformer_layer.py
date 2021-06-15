@@ -126,6 +126,7 @@ class TransformerEncoderLayer(nn.Module):
             attn_mask=attn_mask,
             need_head_weights=need_head_weights
         )
+
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         if not self.normalize_before:
@@ -313,15 +314,17 @@ class TransformerDecoderLayer(nn.Module):
         else:
             y = x
 
-        x, attn_self = self.self_attn(
+        x, attn_weights_self = self.self_attn(
             query=x,
             key=y,
             value=y,
             key_padding_mask=self_attn_padding_mask,
             incremental_state=incremental_state,
             need_weights=False,
+            need_head_weights=need_head_weights,
             attn_mask=self_attn_mask,
         )
+
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         if not self.normalize_before:
@@ -342,7 +345,7 @@ class TransformerDecoderLayer(nn.Module):
                 assert incremental_state is not None
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
 
-            x, attn_enc = self.encoder_attn(
+            x, attn_weights_enc = self.encoder_attn(
                 query=x,
                 key=encoder_out,
                 value=encoder_out,
@@ -352,6 +355,7 @@ class TransformerDecoderLayer(nn.Module):
                 need_weights=need_attn or (not self.training and self.need_attn),
                 need_head_weights=need_head_weights,
             )
+
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = residual + x
             if not self.normalize_before:
@@ -379,8 +383,8 @@ class TransformerDecoderLayer(nn.Module):
                 ]
             else:
                 self_attn_state = [saved_state["prev_key"], saved_state["prev_value"]]
-            return x, attn_self, attn_enc, self_attn_state
-        return x, attn_self, attn_enc, None
+            return x, attn_weights_self, attn_weights_enc, self_attn_state
+        return x, attn_weights_self, attn_weights_enc, None
 
     def make_generation_fast_(self, need_attn: bool = False, **kwargs):
         self.need_attn = need_attn
