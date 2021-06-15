@@ -107,11 +107,6 @@ def main(args, init_distributed=False):
         xm.rendezvous('load_checkpoint')  # wait for all workers
         xm.mark_step()
 
-    # NOTE: Ugly hack to initialize modular attention controller for training
-    if args.arch == 'transformer_modular':
-        model.initialize_best_ctrl_selection(
-            len(task.datasets['train']), args.module_ctrl_init)
-
     # Train until the learning rate gets too small
     max_epoch = args.max_epoch or math.inf
     max_update = args.max_update or math.inf
@@ -203,7 +198,6 @@ def train(args, trainer, task, epoch_itr, max_update=math.inf):
         ),
         default_log_format=('tqdm' if not args.no_progress_bar else 'simple'),
     )
-    progress.log_args(args, tag='train')
 
     trainer.begin_epoch(epoch_itr.epoch)
 
@@ -328,12 +322,6 @@ def validate(args, trainer, task, epoch_itr, subsets):
 
 def get_valid_stats(args, trainer, stats):
     stats['num_updates'] = trainer.get_num_updates()
-    if getattr(args, 'print_best_selection_stats', False):
-        sel_stats = trainer.model.get_best_selection_stats()
-        res = [" ".join(["{}-{}".format(k, v) for k, v in sel_stats["encoder"].items()])]
-        if sel_stats["decoder"] is not None:
-            res.append(" ".join(["{}-{}".format(k, v) for k, v in sel_stats["decoder"].items()]))
-        stats["best_selection_stats"] = ";".join(res)
     if hasattr(checkpoint_utils.save_checkpoint, 'best'):
         key = 'best_{0}'.format(args.best_checkpoint_metric)
         best_function = max if args.maximize_best_checkpoint_metric else min

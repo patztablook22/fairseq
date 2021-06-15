@@ -449,17 +449,6 @@ class SequenceGenerator(nn.Module):
                 List[Dict[str, Tensor]], [x.elem for x in BCList]
             )
 
-        bsz = input_size[0]
-        if hasattr(encoder_outs[0], 'enc_self_attn_weights'):
-            for i in range(bsz):
-                enc_self_attn_conf = ";".join([
-                    ":".join([
-                        ",".join(attn_weights[:, i].max(-1).values.mean(-1).cpu().numpy().astype(np.str))
-                        for attn_weights in o.enc_self_attn_weights])
-                    for o in encoder_outs])
-                for j, _ in enumerate(finalized[i]):
-                    finalized[i][j]['enc_self_attn_conf'] = enc_self_attn_conf
-
         return finalized
 
     def _prefix_tokens(
@@ -890,7 +879,7 @@ class SequenceGeneratorWithAlignment(SequenceGenerator):
         return src_tokens, src_lengths, prev_output_tokens, tgt_tokens
 
 
-class SequenceGeneratorWithSelection(SequenceGenerator):
+class SequenceGeneratorWithModuleMask(SequenceGenerator):
 
     def __init__(self, models, tgt_dict, **kwargs):
         """Generates translations of a given source sentence.
@@ -899,17 +888,17 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
 
         TODO - finish the docstring
         """
-        super().__init__(EnsembleModelWithSelection(models), tgt_dict, **kwargs)
+        super().__init__(EnsembleModelWithModuleMask(models), tgt_dict, **kwargs)
         self.left_pad_target = False
 
     @torch.no_grad()
-    def generate(self, models, sample, selections=None, **kwargs):
+    def generate(self, models, sample, module_mask=None, **kwargs):
         self.model.reset_incremental_state()
 
-        if selections is not None:
-            sample["net_input"]["fixed_selection"] = selections[0]
-            if len(selections) > 1:
-                logger.warn('``fixed_selections'' not supported by the EnsembleModel')
+        if module_mask is not None:
+            sample["net_input"]["module_mask"] = module_mask[0]
+            if len(module_mask) > 1:
+                logger.warn('``module_mask'' not supported by the EnsembleModel')
 
         finalized = super()._generate(sample, **kwargs)
 
@@ -917,37 +906,38 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
         bsz = src_tokens.shape[0]
         beam_size = self.beam_size
 
-        src_tokens, src_lengths, prev_output_tokens, selections = self._prepare_batch_for_selection(
+        src_tokens, src_lengths, prev_output_tokens, module_mask = self._prepare_batch_for_module_mask(
             sample,
             finalized,
-            selections)
-        ctrl_outputs = self.model.forward_select(
+            module_mask)
+        ctrl_outputs = self.model.forward_modular(
             src_tokens,
             src_lengths,
             prev_output_tokens,
-            selections=selections)
+            module_mask=module_mask)
 
         for i in range(bsz * beam_size):
-            selection = ';'.join([
+            module_mask = ';'.join([
                 ','.join(
                     ctrl_out['encoder']
-                    .selection[i]
+                    .mask[i]
                     .cpu().numpy().astype(np.str)
                 ) for ctrl_out in ctrl_outputs
             ])
-            finalized[i // beam_size][i % beam_size]['enc_selection'] = selection
+            finalized[i // beam_size][i % beam_size]['enc_module_mask'] = module_mask
             if ctrl_outputs[0]['decoder'] is not None:
-                selection = ';'.join([
+                module_mask = ';'.join([
                     ','.join(
                         ctrl_out['decoder']
-                        .selection[i]
+                        .mask[i]
                         .cpu().numpy().astype(np.str)
                     ) for ctrl_out in ctrl_outputs
                 ])
-                finalized[i // beam_size][i % beam_size]['dec_selection'] = selection
+                finalized[i // beam_size][i % beam_size]['dec_module_mask'] = module_mask
+        import pdb; pdb.set_trace()
         return finalized
 
-    def _prepare_batch_for_selection(self, sample, hypothesis, selections=None):
+    def _prepare_batch_for_module_mask(self, sample, hypothesis, module_mask=None):
         src_tokens = sample["net_input"]["src_tokens"]
         bsz = src_tokens.shape[0]
         src_tokens = (
@@ -970,28 +960,107 @@ class SequenceGeneratorWithSelection(SequenceGenerator):
             self.left_pad_target,
             move_eos_to_beginning=True,
         )
-        if selections is not None:
-            new_selections = []
-            for sel in selections:
-                if sel['encoder'] is not None:
-                    sel['encoder'] = (
-                        sel['encoder'][:, None, :]
+        if module_mask is not None:
+            new_module_mask = []
+            for mask in module_mask:
+                if mask['encoder'] is not None:
+                    mask['encoder'] = (
+                        mask['encoder'][:, None, :]
                         .expand(-1, self.beam_size, -1)
                         .contiguous()
                         .view(bsz * self.beam_size, -1)
                     )
-                if sel['decoder'] is not None:
-                    sel['decoder'] = (
-                       sel['decoder'][:, None, :]
+                if mask['decoder'] is not None:
+                    mask['decoder'] = (
+                       mask['decoder'][:, None, :]
                         .expand(-1, self.beam_size, -1)
                         .contiguous()
                         .view(bsz * self.beam_size, -1)
                     )
-                new_selections.append(sel)
-            selections = new_selections
+                new_module_mask.append(sel)
+            module_mask = new_module_mask
 
-        return src_tokens, src_lengths, prev_output_tokens, selections
+        return src_tokens, src_lengths, prev_output_tokens, module_mask
 
+
+class SequenceGeneratorWithAttentionWeights(SequenceGenerator):
+    def __init__(self, models, tgt_dict, left_pad_target=False, **kwargs):
+        """Generates translations of a given source sentence.
+
+        Returns a dictionary of attention weights for each example.
+
+        TODO: support for ensembles?
+
+        Args:
+            left_pad_target (bool, optional): Whether or not the
+                hypothesis should be left padded or not when they are
+                teacher forced for generating alignments.
+        """
+        assert len(models) == 1, "{} does not support ensemble models".format(self.__name__)
+
+        super().__init__(ModelWithAttentionWeights(models), tgt_dict, **kwargs)
+        self.left_pad_target = left_pad_target
+
+    @torch.no_grad()
+    def generate(self, models, sample, **kwargs):
+        self.model.reset_incremental_state()
+        finalized = super()._generate(sample, **kwargs)
+
+        src_tokens = sample["net_input"]["src_tokens"]
+        bsz = src_tokens.shape[0]
+        beam_size = self.beam_size
+
+        prepared = self._prepare_batch_for_attention_weights(
+            sample, finalized
+        )
+        src_tokens, src_lengths, prev_output_tokens, tgt_tokens = prepared
+
+        attn_weights = self.model.forward_attention_weights(
+            src_tokens, src_lengths, prev_output_tokens
+        )
+
+        # Process the attn matrix to extract hard alignments.
+        for i in range(bsz * beam_size):
+            attn_w = {
+                attn_type: [
+                    attn[:, i] for attn in attn_weights[attn_type]
+                ] for attn_type in attn_weights
+            }
+
+            finalized[i // beam_size][i % beam_size]["attn_weights"] = attn_w
+        return finalized
+
+    def _prepare_batch_for_attention_weights(self, sample, hypothesis):
+        src_tokens = sample["net_input"]["src_tokens"]
+        bsz = src_tokens.shape[0]
+        src_tokens = (
+            src_tokens[:, None, :]
+            .expand(-1, self.beam_size, -1)
+            .contiguous()
+            .view(bsz * self.beam_size, -1)
+        )
+        src_lengths = sample["net_input"]["src_lengths"]
+        src_lengths = (
+            src_lengths[:, None]
+            .expand(-1, self.beam_size)
+            .contiguous()
+            .view(bsz * self.beam_size)
+        )
+        prev_output_tokens = data_utils.collate_tokens(
+            [beam["tokens"] for example in hypothesis for beam in example],
+            self.pad,
+            self.eos,
+            self.left_pad_target,
+            move_eos_to_beginning=True,
+        )
+        tgt_tokens = data_utils.collate_tokens(
+            [beam["tokens"] for example in hypothesis for beam in example],
+            self.pad,
+            self.eos,
+            self.left_pad_target,
+            move_eos_to_beginning=False,
+        )
+        return src_tokens, src_lengths, prev_output_tokens, tgt_tokens
 
 class EnsembleModelWithAlignment(EnsembleModel):
     """A wrapper around an ensemble of models."""
@@ -1013,29 +1082,47 @@ class EnsembleModelWithAlignment(EnsembleModel):
         return avg_attn
 
 
-class EnsembleModelWithSelection(EnsembleModel):
+class EnsembleModelWithModuleMask(EnsembleModel):
     """A wrapper around an ensemble of models."""
 
     def __init__(self, models):
         super().__init__(models)
 
-    def forward_select(self,
+    def forward_modular(self,
                        src_tokens,
                        src_lengths,
                        prev_output_tokens,
-                       selections=None):
+                       module_mask=None):
         ctrl_outputs = []
         for i, model in enumerate(self.models):
-            sel = None
-            if selections is not None:
-                sel = selections[i]
+            mask = None
+            if module_mask is not None:
+                mask = module_mask[i]
             decoder_out = model(
                 src_tokens,
                 src_lengths,
                 prev_output_tokens,
-                fixed_selection=sel)
+                module_mask=mask)
             ctrl_outputs.append(decoder_out[1]['ctrl_output'])
         return ctrl_outputs
+
+
+class ModelWithAttentionWeights(EnsembleModel):
+    """A wrapper around an ensemble of models.
+
+    TODO: support for ensembles?
+
+    """
+
+    def __init__(self, models):
+        assert len(models) == 1, "{} does not support ensemble models".format(self.__name__)
+        super().__init__(models)
+
+    def forward_attention_weights(self, src_tokens, src_lengths, prev_output_tokens):
+        decoder_out = self.models[0](src_tokens, src_lengths, prev_output_tokens)
+        if 'attn_weights' in decoder_out[1]:
+            return decoder_out[1]["attn_weights"]
+        return None
 
 
 @torch.jit.script

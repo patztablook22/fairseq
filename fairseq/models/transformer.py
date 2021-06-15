@@ -280,7 +280,8 @@ class TransformerModel(FairseqEncoderDecoderModel):
             src_lengths=src_lengths,
             return_all_hiddens=return_all_hiddens,
         )
-        extra["enc_self_attn_weights"] = encoder_out.enc_self_attn_weights
+        extra['attn_weights']['encoder'] = encoder_out.enc_self_attn_weights
+
         return x, extra
 
     # Since get_normalized_probs is in the Fairseq Model which is not scriptable,
