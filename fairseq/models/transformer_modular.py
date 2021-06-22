@@ -63,10 +63,12 @@ class TransformerModularModel(TransformerModel):
         """Add model-specific arguments to the parser."""
         # fmt: off
         super(TransformerModularModel, TransformerModularModel).add_args(parser)
-        parser.add_argument('--modular-type', type=str,
+        parser.add_argument('--module-ctrl-type', type=str,
                             help='type of TransformerModular layer to be used')
-        parser.add_argument('--modular-avg-tokens', action='store_true',
+        parser.add_argument('--module-ctrl-avg-tokens', action='store_true',
                             help='average controler input sequence')
+        parser.add_argument('--module-ctrl-hard-samples', action='store_true',
+                            help='use hard (0, 1) modular mask samples during training')
         #parser.add_argument('--share-encoder-ctrl', action='store_true',
         #                    help='share encoder controller with decoder')
         parser.add_argument('--module-ctrl-hidden-depth', type=int,
@@ -75,6 +77,12 @@ class TransformerModularModel(TransformerModel):
                             help='controller hidden dimension size')
         parser.add_argument('--module-ctrl-word-dropout', type=float,
                             help='controller word dropout')
+        #parser.add_argument('--module-ctrl-max-temperature', type=float,
+        #                    help='starting temperature for ctrl gumbel_sigmoid')
+        #parser.add_argument('--module-ctrl-min-temperature', type=float,
+        #                    help='minimum temperature for ctrl gumbel_sigmoid')
+        #parser.add_argument('--module-ctrl-anneal-rate', type=float,
+        #                    help='temperature anneal rate for ctrl gumbel_sigmoid')
         parser.add_argument('--print-module-mask', action='store_true',
                             help='print the current best_selections statistics')
         # fmt: on
@@ -151,6 +159,7 @@ class TransformerModularModel(TransformerModel):
         features_only: bool = False,
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
+        ctrl_temp: Tensor = 1.,
     ):
         """
         TODO: mode/indices description
@@ -160,6 +169,7 @@ class TransformerModularModel(TransformerModel):
             src_lengths=src_lengths,
             module_mask=module_mask,
             return_all_hiddens=return_all_hiddens,
+            ctrl_temp=ctrl_temp,
         )
         x, extra = self.decoder(
             prev_output_tokens,
@@ -170,6 +180,7 @@ class TransformerModularModel(TransformerModel):
             alignment_heads=alignment_heads,
             src_lengths=src_lengths,
             return_all_hiddens=return_all_hiddens,
+            ctrl_temp=ctrl_temp
         )
         extra['attn_weights']['encoder'] = encoder_out.enc_self_attn_weights
         extra['ctrl_output']['encoder'] = encoder_out.ctrl_output
@@ -210,6 +221,7 @@ class TransformerModularEncoder(TransformerEncoder):
         src_lengths,
         module_mask: Optional[Tensor] = None,
         return_all_hiddens: bool = False,
+        ctrl_temp: Tensor = 1.,
     ):
         """
         TODO: mode/indices description
@@ -229,7 +241,7 @@ class TransformerModularEncoder(TransformerEncoder):
         for layer in self.layers:
             x, attn_w, ctrl_out = layer(
                 x, module_mask, encoder_padding_mask,
-                need_head_weights=True)
+                need_head_weights=True, ctrl_temp=ctrl_temp)
             attn_weights.append(attn_w)
             if return_all_hiddens:
                 assert encoder_states is not None
@@ -337,6 +349,7 @@ class TransformerModularDecoder(TransformerDecoder):
         src_lengths: Optional[Any] = None,
         module_mask: Optional[Dict[str, Tensor]] = None,
         return_all_hiddens: bool = False,
+        ctrl_temp: Tensor = 1.,
     ):
         """
         Args:
@@ -350,6 +363,7 @@ class TransformerModularDecoder(TransformerDecoder):
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
             module_mask=module_mask,
+            ctrl_temp=ctrl_temp,
         )
         if not features_only:
             x = self.output_layer(x)
@@ -364,6 +378,7 @@ class TransformerModularDecoder(TransformerDecoder):
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
         module_mask: Optional[Dict[str, Tensor]] = None,
+        ctrl_temp: Tensor = 1.,
     ):
         """
         Args:
@@ -434,6 +449,7 @@ class TransformerModularDecoder(TransformerDecoder):
                 self_attn_padding_mask=self_attn_padding_mask,
                 need_attn=bool((idx == alignment_layer)),
                 need_head_weights=bool((idx == alignment_layer)),
+                ctrl_temp=ctrl_temp,
             )
 
             self_attn_weights.append(self_attn)
@@ -483,8 +499,10 @@ def transformer_modular(args):
     #args.decoder_modular_layer_indices = getattr(
     #    args, 'enc_dec_modular_layer_indices',
     #    args.decoder_modular_layer_indices)
-    args.modular_type = getattr(args, 'modular_type', 'attention')
-    args.modular_avg_tokens = getattr(args, 'modular_avg_tokens', False)
+    args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'attention')
+    args.module_ctrl_avg_tokens = getattr(args, 'module_ctrl_avg_tokens', False)
+    args.module_ctrl_hard_samples = getattr(args, 'module_ctrl_hard_samples', False)
+
     #args.share_encoder_ctrl = getattr(args, 'share_encoder_ctrl', False)
 
     args.module_ctrl_hidden_depth = getattr(

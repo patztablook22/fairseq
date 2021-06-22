@@ -53,11 +53,36 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=T
     return loss, nll_loss
 
 
+def exponential_annealing(temp, step, anneal_rate, min_temp):
+    return max(temp * math.exp(-1e-6 * step), min_temp)
+
+
+def cosine_annealing(temp, step, min_temp, max_temp, epoch, reset=False):
+    if reset:
+        return min_temp + 0.5 * (max_temp - min_temp) * (1 + math.cos(math.pi * epoch))
+    return temp + 0.5 * (max_temp - min_temp) * (1 + math.cos(math.pi * epoch))
+
+
 @register_criterion('label_smoothed_cross_entropy_modular')
 class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriterion):
 
-    def __init__(self, task, sentence_avg, label_smoothing):
+    def __init__(self,
+                 task,
+                 sentence_avg,
+                 label_smoothing,
+                 module_ctrl_max_temperature,
+                 module_ctrl_min_temperature,
+                 module_ctrl_anneal_rate,
+                 module_ctrl_anneal_type):
         super().__init__(task, sentence_avg, label_smoothing)
+        self.module_ctrl_max_temperature = module_ctrl_max_temperature
+        self.module_ctrl_min_temperature = module_ctrl_min_temperature
+        self.module_ctrl_anneal_rate = module_ctrl_anneal_rate
+        self.module_ctrl_anneal_type = module_ctrl_anneal_type
+
+        self.step = 0
+        self.temp = self.module_ctrl_max_temperature
+
         # TODO regularization?
 
     @staticmethod
@@ -66,8 +91,14 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
         super(
             LabelSmoothedCrossEntropyModularCriterion,
             LabelSmoothedCrossEntropyModularCriterion).add_args(parser)
-        parser.add_argument('--modular-regularization', default=0., type=float,
-                            help='active module ratio regularization')
+        parser.add_argument('--module-ctrl-max-temperature', type=float, default=1.,
+                            help='starting temperature for ctrl gumbel_sigmoid')
+        parser.add_argument('--module-ctrl-min-temperature', type=float, default=(1/16),
+                            help='minimum temperature for ctrl gumbel_sigmoid')
+        parser.add_argument('--module-ctrl-anneal-rate', type=float, default=1e-6,
+                            help='temperature anneal rate for ctrl gumbel_sigmoid')
+        parser.add_argument('--module-ctrl-anneal-type', type=str, default='exponential',
+                            help='temperature annealing type')
         # fmt: on
 
     def forward(self, model, sample, reduce=True):
@@ -78,7 +109,23 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        net_output = model(**sample['net_input'])
+
+        if self.module_ctrl_anneal_type == 'exponential':
+            self.temp = exponential_annealing(
+                self.temp, self.step, self.module_ctrl_anneal_rate,
+                self.module_ctrl_min_temperature)
+        elif self.module_ctrl_anneal_type == 'cosine':
+            # TODO: use correct epoch information
+            self.temp = cosine_annealing(
+                self.temp, self.step, self.module_ctrl_min_temperature,
+                self.module_ctrl_max_temperature, self.step % 1e6, self.step // 1e6 == 0)
+        elif self.module_ctrl_anneal_type == 'constant':
+            self.temp = self.module_ctrl_max_temperature
+        else:
+            raise ValueError('Unknown module annealing type: {}'.format(self.module_ctrl_anneal_type))
+        self.step += 1
+
+        net_output = model(**sample['net_input'], ctrl_temp=self.temp)
         loss, nll_loss = self.compute_loss(
             model, net_output, sample, reduce=reduce)
         sample_size = sample['target'].size(0) if self.sentence_avg else sample['ntokens']
