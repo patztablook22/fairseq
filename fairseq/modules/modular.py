@@ -32,10 +32,13 @@ def gumbel_sigmoid_sample(logits, temperature):
     return torch.sigmoid(y / temperature)
 
 
-def gumbel_sigmoid(logits, temperature=1.0):
+def gumbel_sigmoid(logits, temperature=1.0, hard=True):
     y = gumbel_sigmoid_sample(logits, temperature)
-    y_hard = (y > 0.5).float()
-    return (y_hard - y).detach() + y
+
+    if hard:
+        y_hard = (y > 0.5).float()
+        return (y_hard - y).detach() + y
+    return y
 
 
 ModularCtrlOut = NamedTuple(
@@ -57,11 +60,13 @@ class ModularCtrl(nn.Module):
                  hidden_dim=None,
                  dropout=0.0,
                  word_dropout=0.0,
+                 hard_samples=False,
                  averaged_tokens=False):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.hidden_depth = hidden_depth
+        self.hard_samples = hard_samples
         self.averaged_tokens = averaged_tokens
 
         self.n_modules = n_modules
@@ -81,40 +86,41 @@ class ModularCtrl(nn.Module):
         self.out_proj = nn.Linear(input_dim, n_modules)
 
     def extract_features(self, x, padding_mask=None):
-        bsz = x.size(0)
-        x = x.view(bsz, -1, self.input_dim)
+        # shape(x) = (len, bsz, emb)
+        bsz = x.size(1)
+        x = x.view(-1, bsz, self.input_dim)
 
         if padding_mask is not None:
             # The mask contains '1' in place of the padding symbols
-            mask = ~padding_mask
-            mask = mask.view(bsz, -1, 1)
+            input_mask = ~padding_mask
+            input_mask = input_mask.view(-1, bsz, 1)
         else:
-            mask = torch.ones(x.size(0), x.size(1), 1).to(x.device)
-        mask = mask.float()
+            input_mask = torch.ones(x.size(0), x.size(1), 1).to(x.device)
+        input_mask = input_mask.float()
 
         # Word dropout described in Iyyer et al. (2015)
         if self.training:
-            mask *= torch.bernoulli(
-                torch.ones(mask.shape).to(x.device) * (1. - self.word_dropout))
+            input_mask *= torch.bernoulli(
+                torch.ones(input_mask.shape).to(x.device) * (1. - self.word_dropout))
 
         if self.averaged_tokens:
-            x = masked_mean(x, mask=mask, axis=0).unsqueeze(0)
+            x = masked_mean(x, mask=input_mask, axis=0).unsqueeze(0)
         else:
-            x *= mask.float()
+            x *= input_mask.float()
 
         return self.fc_net(x)
 
-    def forward(self, x, padding_mask=None):
-        bsz = x.size(0)
+    def forward(self, x, padding_mask=None, temperature=1.0):
         features = self.extract_features(x, padding_mask)
         logits = self.out_proj(features)
 
         if self.training:
-            mask = gumbel_sigmoid(logits)
+            module_mask = gumbel_sigmoid(
+                logits, temperature, hard=self.hard_samples)
         else:
-            mask = (logits > 0.).float()
+            module_mask = (logits > 0.).float()
 
         return ModularCtrlOut(
             logits=logits,
-            mask=mask
+            mask=module_mask
         )

@@ -1042,25 +1042,26 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
             prev_output_tokens,
             module_mask=module_mask)
 
+        def get_module_mask_string(ctrl_out_mask):
+            return ','.join(
+                ''.join(m.int().cpu().numpy().astype(np.str))
+                for m in ctrl_out_mask
+            )
+
         for i in range(bsz * beam_size):
-            module_mask = ';'.join([
-                ','.join(
-                    ctrl_out['encoder']
-                    .mask[i]
-                    .cpu().numpy().astype(np.str)
-                ) for ctrl_out in ctrl_outputs
-            ])
-            finalized[i // beam_size][i % beam_size]['enc_module_mask'] = module_mask
+            # Mask shape: (len, bsz, num. heads)
+            if ctrl_outputs[0]['encoder'] is not None:
+                module_mask = ';'.join([
+                    '{}:{}'.format(layer_num, get_module_mask_string(ctrl_out['encoder'].mask[:, i]))
+                    for layer_num, ctrl_out in enumerate(ctrl_outputs)
+                ])
+                finalized[i // beam_size][i % beam_size]['enc_module_mask'] = module_mask
             if ctrl_outputs[0]['decoder'] is not None:
                 module_mask = ';'.join([
-                    ','.join(
-                        ctrl_out['decoder']
-                        .mask[i]
-                        .cpu().numpy().astype(np.str)
-                    ) for ctrl_out in ctrl_outputs
+                    '{}:{}'.format(layer_num, get_module_mask_string(ctrl_out['decoder'].mask[:, i]))
+                    for layer_num, ctrl_out in enumerate(ctrl_outputs)
                 ])
                 finalized[i // beam_size][i % beam_size]['dec_module_mask'] = module_mask
-        import pdb; pdb.set_trace()
         return finalized
 
     def _prepare_batch_for_module_mask(self, sample, hypothesis, module_mask=None):

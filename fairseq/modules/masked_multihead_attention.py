@@ -265,10 +265,7 @@ class MaskedMultiheadAttention(MultiheadAttention):
         )
         assert v is not None
         attn = torch.bmm(attn_probs, v)
-        try:
-            attn *= module_mask.view(bsz * self.num_heads, -1, 1)
-        except:
-            import pdb; pdb.set_trace()
+        attn *= module_mask.view(bsz * self.num_heads, -1, 1)
         assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)
