@@ -202,10 +202,10 @@ def main(args):
                         id,
                         alignment_str
                     ))
-                if 'enc_selection' in hypo:
-                    print('Menc-{}\t{}'.format(id, hypo['enc_selection']))
-                if 'dec_selection' in hypo:
-                    print('Mdec-{}\t{}'.format(id, hypo['dec_selection']))
+                if 'enc_module_mask' in hypo:
+                    print('Menc-{}\t{}'.format(id, hypo['enc_module_mask']))
+                if 'dec_module_mask' in hypo:
+                    print('Mdec-{}\t{}'.format(id, hypo['dec_module_mask']))
 
         # update running id counter
         start_id += len(inputs)

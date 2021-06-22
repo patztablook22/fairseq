@@ -35,7 +35,8 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             hidden_dim=args.module_ctrl_hidden_dim,
             dropout=args.dropout,
             word_dropout=args.module_ctrl_word_dropout,
-            averaged_tokens=args.modular_avg_tokens)
+            hard_samples=args.module_ctrl_hard_samples,
+            averaged_tokens=args.module_ctrl_avg_tokens)
 
     def build_self_attention(self, embed_dim, args):
         return MaskedMultiheadAttention(
@@ -53,7 +54,9 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         module_mask: Tensor,
         encoder_padding_mask,
         attn_mask: Optional[Tensor] = None,
-        need_head_weights: bool = False):
+        need_head_weights: bool = False,
+        ctrl_temp: Tensor = 1.,
+    ):
         """
         Args:
             x (Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
@@ -88,7 +91,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         # MultiheadAttention. We will do this later on.
         self_mod_mask = module_mask
         if self_mod_mask is None:
-            ctrl_out = self.ctrl_self(x, encoder_padding_mask)
+            ctrl_out = self.ctrl_self(x, encoder_padding_mask, ctrl_temp)
             self_mod_mask = ctrl_out.mask
 
         x, attn_weights = self.self_attn(
@@ -135,7 +138,8 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             hidden_dim=args.module_ctrl_hidden_dim,
             dropout=args.dropout,
             word_dropout=args.module_ctrl_word_dropout,
-            averaged_tokens=args.modular_avg_tokens)
+            hard_samples=args.module_ctrl_hard_samples,
+            averaged_tokens=args.module_ctrl_avg_tokens)
 
         self.ctrl_enc = ModularCtrl(
             args.decoder_embed_dim,
@@ -144,7 +148,8 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             hidden_dim=args.module_ctrl_hidden_dim,
             dropout=args.dropout,
             word_dropout=args.module_ctrl_word_dropout,
-            averaged_tokens=args.modular_avg_tokens)
+            hard_samples=args.module_ctrl_hard_samples,
+            averaged_tokens=args.module_ctrl_avg_tokens)
 
     def build_self_attention(self,
                              embed_dim,
@@ -190,6 +195,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         self_attn_padding_mask: Optional[torch.Tensor] = None,
         need_attn: bool = False,
         need_head_weights: bool = False,
+        ctrl_temp: Tensor = 1.,
     ):
         """
         Args:
@@ -248,7 +254,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
 
         self_mod_mask = module_mask
         if self_mod_mask is None:
-            ctrl_self_out = self.ctrl_self(x, self_attn_padding_mask)
+            ctrl_self_out = self.ctrl_self(x, self_attn_padding_mask, ctrl_temp)
             self_mod_mask = ctrl_self_out.mask
 
         x, attn_weights_self = self.self_attn(
@@ -285,7 +291,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
 
             enc_mod_mask = module_mask
             if enc_mod_mask is None:
-                ctrl_enc_out = self.ctrl_enc(x, self_attn_padding_mask)
+                ctrl_enc_out = self.ctrl_enc(x, self_attn_padding_mask, ctrl_temp)
                 enc_mod_mask = ctrl_enc_out.mask
 
             x, attn_weights_enc = self.encoder_attn(
