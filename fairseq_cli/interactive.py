@@ -211,16 +211,27 @@ def main(cfg: FairseqConfig):
             src_tokens = batch.src_tokens
             src_lengths = batch.src_lengths
             constraints = batch.constraints
+
+            module_mask = cfg.module_ctrl_fixed_mask
+            if module_mask is not None:
+                module_mask = torch.Tensor(
+                    [int(x) for x in module_mask.split(',')]
+                ).float()
+
             if use_cuda:
                 src_tokens = src_tokens.cuda()
                 src_lengths = src_lengths.cuda()
                 if constraints is not None:
                     constraints = constraints.cuda()
+                if module_mask is not None:
+                    module_mask = module_mask.cuda()
+
 
             sample = {
                 "net_input": {
                     "src_tokens": src_tokens,
                     "src_lengths": src_lengths,
+                    "module_mask": module_mask,
                 },
             }
             translate_start_time = time.time()
@@ -296,12 +307,11 @@ def main(cfg: FairseqConfig):
                         ["{}-{}".format(src, tgt) for src, tgt in alignment]
                     )
                     print("A-{}\t{}".format(id_, alignment_str))
-
                 if cfg.generation.print_selection:
-                    if 'enc_module_mask' in hypo:
-                        print('Menc-{}\t{}'.format(id, hypo['enc_module_mask']))
-                    if 'dec_module_mask' in hypo:
-                        print('Mdec-{}\t{}'.format(id, hypo['dec_module_mask']))
+                    # TODO: get the mask keys directly from the model
+                    for key in hypo:
+                        if "_mask" in key:
+                            print('M{}-{}\t{}'.format(key, id, hypo[key]))
 
         # update running id_ counter
         start_id += len(inputs)

@@ -14,7 +14,7 @@ EMB_SIZE=128
 FFN_SIZE=$(expr 4 \* $EMB_SIZE)
 ATT_HEADS=8
 DEPTH=1
-SHARED_DICT_OPT="--share-decoder-input-output-embed"
+SHARED_DICT_OPT=""
 
 # Training Reset
 RESET_OPTIMIZER_OPT=
@@ -45,6 +45,12 @@ CTRL_MIN_TEMP=0.0625
 CTRL_MAX_TEMP=1.
 CTRL_ANNEAL_TYPE="exponential"
 CTRL_ANNEAL_RATE="1e-6"
+
+# Regularizer
+CTRL_MODULE_COVERAGE=0.5
+CTRL_REGULARIZER_WEIGHT=1.0
+
+FREEZE_PARAMS=
 
 HELP=1
 while [[ $# -gt 0 ]]; do
@@ -156,6 +162,18 @@ case $key in
         CTRL_ANNEAL_RATE="$2"
         shift
     ;;
+    --ctrl-coverage)
+        CTRL_MODULE_COVERAGE="$2"
+        shift
+    ;;
+    --ctrl-regularizer-weight)
+        CTRL_REGULARIZER_WEIGHT="$2"
+        shift
+    ;;
+    --freeze-params)
+        FREEZE_PARAMS="$2"
+        shift
+    ;;
     --save-every-n)
         SAVE_EVERY_N_UPDATES="$2"
         shift
@@ -184,8 +202,8 @@ done
 
 MODEL_DIR="$EXPDIR/transformer_modular"
 MODEL_DIR="$MODEL_DIR.seed-$RANDOM_SEED"
-MODEL_DIR="$MODEL_DIR.warmup-$WARMUP"
-MODEL_DIR="$MODEL_DIR.clip-norm-$CLIP_NORM"
+#MODEL_DIR="$MODEL_DIR.warmup-$WARMUP"
+#MODEL_DIR="$MODEL_DIR.clip-norm-$CLIP_NORM"
 MODEL_DIR="$MODEL_DIR.emb-size-$EMB_SIZE"
 #MODEL_DIR="$MODEL_DIR.ffn-size-$FFN_SIZE"
 MODEL_DIR="$MODEL_DIR.att-heads-$ATT_HEADS"
@@ -194,19 +212,30 @@ MODEL_DIR="$MODEL_DIR.lr-$LR"
 #MODEL_DIR="$MODEL_DIR.ctrl-depth-$CTRL_DEPTH"
 #MODEL_DIR="$MODEL_DIR.max-tokens-$MAX_TOKENS"
 [[ -z "$RESET_OPTIMIZER_OPT" ]] || MODEL_DIR="$MODEL_DIR.reset-optim"
-[[ -z "$CTRL_AVG_TOKENS_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-avg-tokens"
-[[ -z "$CTRL_SAMPLING_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-hard-samples"
-MODEL_DIR="$MODEL_DIR.anneal-type-$CTRL_ANNEAL_TYPE"
+#[[ -z "$CTRL_AVG_TOKENS_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-avg-tokens"
+#[[ -z "$CTRL_SAMPLING_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-hard-samples"
+MODEL_DIR="$MODEL_DIR.anneal-$CTRL_ANNEAL_TYPE"
+MODEL_DIR="$MODEL_DIR.anneal-rate-$CTRL_ANNEAL_RATE"
+MODEL_DIR="$MODEL_DIR.cov-$CTRL_MODULE_COVERAGE"
+MODEL_DIR="$MODEL_DIR.max-temp-$CTRL_MAX_TEMP"
+MODEL_DIR="$MODEL_DIR.reg-$CTRL_REGULARIZER_WEIGHT"
+
 
 [[ -d $MODEL_DIR ]] && rm -r $MODEL_DIR
 mkdir $MODEL_DIR
 echo $TASKS | sed 's/ /->/g' > $MODEL_DIR/TASKS
+echo $FREEZE_PARAMS > $MODEL_DIR/FREEZE_PARAMS
 
 ckpt_opt=
 epochs=$EPOCHS
 valid_sets=`echo $VALID_TASKS | sed 's/ /.15.valid,/g;s/$/.15.valid/'`
 for current_task in $TASKS; do
     echo Training $current_task...
+
+    # We freeze the parameters only after finishing the training of the first task
+    PARAM_FREEZE_OPT=
+    [[ -e "$MODEL_DIR/checkpoints/checkpoint_last.pt" ]] && [[ -n "$FREEZE_PARAMS" ]] && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
+
     jid=$(qsubmit \
         --queue="gpu-troja.q" \
         --logdir=$MODEL_DIR/logs \
@@ -269,7 +298,9 @@ for current_task in $TASKS; do
             --module-ctrl-min-temperature $CTRL_MIN_TEMP \
             --module-ctrl-anneal-type $CTRL_ANNEAL_TYPE \
             --module-ctrl-anneal-rate $CTRL_ANNEAL_RATE \
-            --print-module-mask \
+            --module-coverage-regularizer-ratio $CTRL_MODULE_COVERAGE \
+            --module-coverage-regularizer-weight $CTRL_REGULARIZER_WEIGHT \
+            $PARAM_FREEZE_OPT \
             --save-interval-updates $SAVE_EVERY_N_UPDATES")
 
     jid=`echo $jid | cut -d" " -f3`
@@ -285,7 +316,8 @@ for current_task in $TASKS; do
         -t $current_task \
         --expdir $MODEL_DIR \
         --tasks "$VALID_TASKS $current_task" \
-        --eval-dir $EVAL_DIR &
+        --eval-dir $EVAL_DIR \
+        --translation-options '--print-module-mask' | tee -a $MODEL_DIR/logs/$current_task.eval.log &
 
     epochs=`expr $epochs + $EPOCHS`
 done

@@ -250,6 +250,7 @@ class CommonConfig(FairseqDataclass):
             "help": "path to run plasma_store, defaults to /tmp/plasma. Paths outside /tmp tend to fail."
         },
     )
+    
 
 
 @dataclass
@@ -637,6 +638,13 @@ class OptimizationConfig(FairseqDataclass):
         },
     )
     debug_param_names: bool = False
+    parameter_freeze_substr: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "user provided module mask that should be used instead of module"
+            " controller output"
+        },
+    )
 
 
 @dataclass

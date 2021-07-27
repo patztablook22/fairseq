@@ -118,9 +118,8 @@ class MaskedMultiheadAttention(MultiheadAttention):
 
         if self.bias_k is not None:
             assert self.bias_v is not None
-            #TODO extract bias_k, bias_v + concat
-            #k = torch.cat([k, self.bias_k.repeat(1, bsz, 1)])
-            #v = torch.cat([v, self.bias_v.repeat(1, bsz, 1)])
+            k = torch.cat([k, self.bias_k.repeat(1, bsz, 1)])
+            v = torch.cat([v, self.bias_v.repeat(1, bsz, 1)])
             if attn_mask is not None:
                 attn_mask = torch.cat(
                     [attn_mask, attn_mask.new_zeros(attn_mask.size(0), 1)], dim=1
@@ -223,8 +222,7 @@ class MaskedMultiheadAttention(MultiheadAttention):
                 )
 
         attn_weights = torch.bmm(q, k.transpose(1, 2))
-        attn_weights = MaskedMultiheadAttention.apply_sparse_mask(
-            attn_weights, tgt_len, src_len, bsz)
+        attn_weights = MaskedMultiheadAttention.apply_sparse_mask(attn_weights, tgt_len, src_len, bsz)
 
         assert list(attn_weights.size()) == [bsz * self.num_heads, tgt_len, src_len]
 
@@ -258,23 +256,28 @@ class MaskedMultiheadAttention(MultiheadAttention):
             attn_weights, dim=-1, onnx_trace=self.onnx_trace
         )
         attn_weights = attn_weights_float.type_as(attn_weights)
+        # The masking is inspired by Michel et al. (2019), "Are Sixteen Heads Really Better than One?"
+        # (https://github.com/pmichel31415/fairseq/blob/master/fairseq/modules/multihead_attention.py#L196)
+        if module_mask is not None:
+            module_mask = module_mask.transpose(1, 2).contiguous().unsqueeze(-1)
+            attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) * module_mask
+            attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
+
         attn_probs = F.dropout(
-            attn_weights_float.type_as(attn_weights),
+            attn_weights,
             p=self.dropout,
             training=self.training,
         )
+
         assert v is not None
         attn = torch.bmm(attn_probs, v)
-        attn *= module_mask.view(bsz * self.num_heads, -1, 1)
         assert list(attn.size()) == [bsz * self.num_heads, tgt_len, self.head_dim]
         if self.onnx_trace and attn.size(1) == 1:
             # when ONNX tracing a single decoder step (sequence length == 1)
             # the transpose is a no-op copy before view, thus unnecessary
-            attn = attn.contiguous().view(
-                tgt_len, bsz, self.head_dim * self.num_heads)
+            attn = attn.contiguous().view(tgt_len, bsz, embed_dim)
         else:
-            attn = attn.transpose(0, 1).contiguous().view(
-                tgt_len, bsz, self.head_dim * self.num_heads)
+            attn = attn.transpose(0, 1).contiguous().view(tgt_len, bsz, embed_dim)
         attn = self.out_proj(attn)
         attn_weights: Optional[Tensor] = None
         if need_weights:

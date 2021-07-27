@@ -41,6 +41,16 @@ from fairseq.model_parallel.megatron_trainer import MegatronTrainer
 from fairseq.trainer import Trainer
 
 
+def add_fixed_mask_to_input(sample, cfg):
+    module_mask = cfg.module_ctrl_fixed_mask
+    if module_mask is None:
+        return sample
+    device = sample["net_input"]["src_tokens"].device
+    module_mask = torch.Tensor([int(x) for x in module_mask.split(',')], device=device).float()
+    sample["net_input"]["module_mask"] = module_mask
+    return sample
+
+
 def main(cfg: FairseqConfig) -> None:
     if isinstance(cfg, argparse.Namespace):
         cfg = convert_namespace_to_omegaconf(cfg)
@@ -329,6 +339,10 @@ def train(
         with metrics.aggregate("train_inner"), torch.autograd.profiler.record_function(
             "train_step-%d" % i
         ):
+            # HACK: We want to pass the epoch number to the criterion through the samples
+            for s in samples:
+                s["epoch_num"] = progress.wrapped_bar.epoch
+            samples = [add_fixed_mask_to_input(s, args) for s in samples]
             log_output = trainer.train_step(samples)
 
         if log_output is not None:  # not OOM, overflow, ...
@@ -520,6 +534,7 @@ def validate(
                     and i > cfg.dataset.max_valid_steps
                 ):
                     break
+                sample = add_fixed_mask_to_input(sample, args)
                 trainer.valid_step(sample)
 
         # log validation stats
