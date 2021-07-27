@@ -169,12 +169,24 @@ class Trainer(object):
         return self._lr_scheduler
 
     def _build_optimizer(self):
-        params = list(
+        named_params = list(
             filter(
-                lambda p: p.requires_grad,
-                chain(self.model.parameters(), self.criterion.parameters()),
+                lambda p: p[1].requires_grad,
+                chain(self.model.named_parameters(), self.criterion.named_parameters()),
             )
         )
+        if self.args.parameter_freeze_substr is not None:
+            substrings = self.args.parameter_freeze_substr.split(',')
+            frozen_params = list(
+                filter(
+                    lambda p: any([s in p[0] for s in substrings]),
+                    named_params
+                )
+            )
+            for _, t in frozen_params:
+                t.requires_grad = False
+            logger.info('Following parameter weights will be frozen during training: {}'.format([p[0] for p in frozen_params]))
+        params = [p[1] for p in named_params]
 
         if self.args.fp16 or self.args.bf16:
             if self.cuda and torch.cuda.get_device_capability(0)[0] < 7:

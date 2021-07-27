@@ -151,16 +151,25 @@ def main(args):
         for batch in make_batches(inputs, args, task, max_positions, encode_fn):
             src_tokens = batch.src_tokens
             src_lengths = batch.src_lengths
+
+            module_mask = args.module_ctrl_fixed_mask
+            if module_mask is not None:
+                module_mask = torch.Tensor([int(x) for x in module_mask.split(',')]).float()
+
             if use_cuda:
                 src_tokens = src_tokens.cuda()
                 src_lengths = src_lengths.cuda()
+                if module_mask is not None:
+                    module_mask = module_mask.cuda()
 
             sample = {
                 'net_input': {
                     'src_tokens': src_tokens,
                     'src_lengths': src_lengths,
+                    'module_mask': module_mask,
                 },
             }
+
             translations = task.inference_step(generator, models, sample)
             for i, (id, hypos) in enumerate(zip(batch.ids.tolist(), translations)):
                 src_tokens_i = utils.strip_pad(src_tokens[i], tgt_dict.pad())
@@ -202,10 +211,10 @@ def main(args):
                         id,
                         alignment_str
                     ))
-                if 'enc_module_mask' in hypo:
-                    print('Menc-{}\t{}'.format(id, hypo['enc_module_mask']))
-                if 'dec_module_mask' in hypo:
-                    print('Mdec-{}\t{}'.format(id, hypo['dec_module_mask']))
+                # TODO: get the mask keys directly from the model
+                for key in hypo:
+                    if "_mask" in key:
+                        print('M{}-{}\t{}'.format(key, id, hypo[key]))
 
         # update running id counter
         start_id += len(inputs)

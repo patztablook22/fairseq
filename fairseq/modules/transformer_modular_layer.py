@@ -20,14 +20,18 @@ from torch import Tensor
 
 
 class TransformerModularEncoderLayer(TransformerEncoderLayer):
-    """
-    TODO
+    """Encoder layer block with conditional computation support.
+
+    The block is extended with an additional controller subnetworks which
+    handles the masking of the mask-supporting submodules (e.g. multi-head
+    attention) based on its input.
 
     Args:
         args (argparse.Namespace): parsed command-line arguments
     """
     def __init__(self, args):
         super().__init__(args)
+        #TODO: move the ctrl building into separate class methods
         self.ctrl_self = ModularCtrl(
             args.encoder_embed_dim,
             args.encoder_attention_heads,
@@ -55,21 +59,25 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         encoder_padding_mask,
         attn_mask: Optional[Tensor] = None,
         need_head_weights: bool = False,
-        ctrl_temp: Tensor = 1.,
+        ctrl_temperature: Tensor = 1.,
     ):
         """
         Args:
             x (Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
             encoder_padding_mask (ByteTensor): binary ByteTensor of shape
                 `(batch, src_len)` where padding elements are indicated by ``1``.
-            module_mask: TODO
+            module_mask: a fixed controller output module mask, whenever
+                an controller is defined in a Transformer layer, a controller
+                output will be ignored and the module_mask will be used instead
             attn_mask (ByteTensor): binary tensor of shape (T_tgt, T_src), where
             T_tgt is the length of query, while T_src is the length of key,
             though here both query and key is x here,
             attn_mask[t_tgt, t_src] = 1 means when calculating embedding
             for t_tgt, t_src is excluded (or masked out), =0 means it is
             included in attentioni
-            need_head_weights: TODO
+            need_head_weights (bool, optional): return attention weights
+                for each head (default: return average over heads).
+            ctrl_temperature: temperature parameter for Gumbel-Softmax
 
         Returns:
             tuple of:
@@ -89,9 +97,15 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         # will become -inf, which results in NaN in model parameters
         # TODO: to formally solve this problem, we need to change fairseq's
         # MultiheadAttention. We will do this later on.
+        ctrl_out = None
         self_mod_mask = module_mask
-        if self_mod_mask is None:
-            ctrl_out = self.ctrl_self(x, encoder_padding_mask, ctrl_temp)
+        if self_mod_mask is not None:
+            self_mod_mask = self_mod_mask.view(1, 1, -1)
+        elif self.ctrl_self is not None:
+            ctrl_out = self.ctrl_self(
+                x,
+                padding_mask=encoder_padding_mask,
+                temperature=ctrl_temperature)
             self_mod_mask = ctrl_out.mask
 
         x, attn_weights = self.self_attn(
@@ -121,8 +135,11 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
 
 
 class TransformerModularDecoderLayer(TransformerDecoderLayer):
-    """
-    TODO
+    """Decoder layer block with conditional computation support.
+
+    The block is extended with an additional controller subnetworks which
+    handles the masking of the mask-supporting submodules (e.g. multi-head
+    attention) based on its input.
 
     Args:
         args (argparse.Namespace): parsed command-line arguments
@@ -131,6 +148,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
     ):
         super().__init__(args, no_encoder_attn, add_bias_kv, add_zero_attn)
+        #TODO: move the ctrl building into separate class methods
         self.ctrl_self = ModularCtrl(
             args.decoder_embed_dim,
             args.decoder_attention_heads,
@@ -195,21 +213,28 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         self_attn_padding_mask: Optional[torch.Tensor] = None,
         need_attn: bool = False,
         need_head_weights: bool = False,
-        ctrl_temp: Tensor = 1.,
+        ctrl_temperature: Tensor = 1.,
     ):
         """
         Args:
             x (Tensor): input to the layer of shape `(seq_len, batch, embed_dim)`
-            module_mask: TODO
+            module_mask: a fixed controller output module mask, whenever
+                an controller is defined in a Transformer layer, a controller
+                output will be ignored and the module_mask will be used instead
             encoder_padding_mask (ByteTensor, optional): binary
                 ByteTensor of shape `(batch, src_len)` where padding
                 elements are indicated by ``1``.
             need_attn (bool, optional): return attention weights
             need_head_weights (bool, optional): return attention weights
                 for each head (default: return average over heads).
+            ctrl_temperature: temperature parameter for Gumbel-Softmax
 
         Returns:
-            encoded output of shape `(seq_len, batch, embed_dim)`
+            tuple of:
+                encoded output of shape `(seq_len, batch, embed_dim)`
+                selected attention heads
+                controller module
+
         """
         if need_head_weights:
             need_attn = True
@@ -252,9 +277,17 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         else:
             y = x
 
+        ctrl_self_out = None
         self_mod_mask = module_mask
-        if self_mod_mask is None:
-            ctrl_self_out = self.ctrl_self(x, self_attn_padding_mask, ctrl_temp)
+        if self_mod_mask is not None:
+            self_mod_mask = self_mod_mask.view(1, 1, -1)
+        elif self.ctrl_self is not None:
+            ctrl_self_out = self.ctrl_self(
+                x,
+                padding_mask=self_attn_padding_mask,
+                future_mask=self_attn_mask,
+                incremental_state=incremental_state,
+                temperature=ctrl_temperature)
             self_mod_mask = ctrl_self_out.mask
 
         x, attn_weights_self = self.self_attn(
@@ -289,9 +322,17 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                 assert incremental_state is not None
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
 
+            ctrl_enc_out = None
             enc_mod_mask = module_mask
-            if enc_mod_mask is None:
-                ctrl_enc_out = self.ctrl_enc(x, self_attn_padding_mask, ctrl_temp)
+            if enc_mod_mask is not None:
+                enc_mod_mask = enc_mod_mask.view(1, 1, -1)
+            elif self.ctrl_enc is not None:
+                ctrl_enc_out = self.ctrl_enc(
+                    x,
+                    padding_mask=self_attn_padding_mask,
+                    future_mask=self_attn_mask,
+                    incremental_state=incremental_state,
+                    temperature=ctrl_temperature)
                 enc_mod_mask = ctrl_enc_out.mask
 
             x, attn_weights_enc = self.encoder_attn(
@@ -335,9 +376,27 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                 self_attn_state = [saved_state["prev_key"], saved_state["prev_value"]]
             return (
                 x, attn_weights_self, attn_weights_enc, self_attn_state,
-                {"decoder": ctrl_self_out, "encoder_decoder": ctrl_enc_out}
+                {"decoder": ctrl_self_out, "enc_dec": ctrl_enc_out}
             )
         return (
             x, attn_weights_self, attn_weights_enc, None,
-            {"decoder": ctrl_self_out, "encoder_decoder": ctrl_enc_out}
+            {"decoder": ctrl_self_out, "enc_dec": ctrl_enc_out}
         )
+
+    @torch.jit.export
+    def reorder_incremental_state(
+        self,
+        incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
+        new_order: Tensor,
+    ):
+        """Scriptable reorder incremental state in transformer layers."""
+        self.self_attn.reorder_incremental_state(incremental_state, new_order)
+
+        if self.encoder_attn is not None:
+            self.encoder_attn.reorder_incremental_state(incremental_state, new_order)
+
+        if self.ctrl_self is not None:
+            self.ctrl_self.reorder_incremental_state(incremental_state, new_order)
+
+        if self.ctrl_enc is not None:
+            self.ctrl_enc.reorder_incremental_state(incremental_state, new_order)

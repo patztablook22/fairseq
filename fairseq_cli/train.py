@@ -39,6 +39,16 @@ logging.basicConfig(
 logger = logging.getLogger('fairseq_cli.train')
 
 
+def add_fixed_mask_to_input(sample, args):
+    module_mask = args.module_ctrl_fixed_mask
+    if module_mask is None:
+        return sample
+    device = sample["net_input"]["src_tokens"].device
+    module_mask = torch.Tensor([int(x) for x in module_mask.split(',')], device=device).float()
+    sample["net_input"]["module_mask"] = module_mask
+    return sample
+
+
 def main(args, init_distributed=False):
     utils.import_user_module(args)
 
@@ -204,6 +214,10 @@ def train(args, trainer, task, epoch_itr, max_update=math.inf):
     valid_subsets = args.valid_subset.split(',')
     for samples in progress:
         with metrics.aggregate('train_inner'):
+            # HACK: We want to pass the epoch number to the criterion through the samples
+            for s in samples:
+                s["epoch_num"] = progress.wrapped_bar.epoch
+            samples = [add_fixed_mask_to_input(s, args) for s in samples]
             log_output = trainer.train_step(samples)
             if log_output is None:  # OOM, overflow, ...
                 continue
@@ -310,6 +324,7 @@ def validate(args, trainer, task, epoch_itr, subsets):
         # don't pollute other aggregators (e.g., train meters)
         with metrics.aggregate(new_root=True) as agg:
             for sample in progress:
+                sample = add_fixed_mask_to_input(sample, args)
                 trainer.valid_step(sample)
 
         # log validation stats

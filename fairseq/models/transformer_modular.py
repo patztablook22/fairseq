@@ -41,18 +41,9 @@ DEFAULT_MAX_TARGET_POSITIONS = 1024
 @register_model("transformer_modular")
 class TransformerModularModel(TransformerModel):
     """
-    TODO
+    Transformer architecture with an additional conditional computation support.
 
-    Args:
-        encoder (TransformerEncoder): the encoder
-        decoder (TransformerDecoder): the decoder
-
-    The Modular Transformer model provides the following named architectures and
-    command-line arguments:
-
-    .. argparse::
-        :ref: fairseq.models.transformer_parser
-        :prog:
+    See the parent class for more details.
     """
 
     def __init__(self, args, encoder, decoder):
@@ -69,22 +60,12 @@ class TransformerModularModel(TransformerModel):
                             help='average controler input sequence')
         parser.add_argument('--module-ctrl-hard-samples', action='store_true',
                             help='use hard (0, 1) modular mask samples during training')
-        #parser.add_argument('--share-encoder-ctrl', action='store_true',
-        #                    help='share encoder controller with decoder')
         parser.add_argument('--module-ctrl-hidden-depth', type=int,
                             help='num of controller hidden layers')
         parser.add_argument('--module-ctrl-hidden-dim', type=int,
                             help='controller hidden dimension size')
         parser.add_argument('--module-ctrl-word-dropout', type=float,
                             help='controller word dropout')
-        #parser.add_argument('--module-ctrl-max-temperature', type=float,
-        #                    help='starting temperature for ctrl gumbel_sigmoid')
-        #parser.add_argument('--module-ctrl-min-temperature', type=float,
-        #                    help='minimum temperature for ctrl gumbel_sigmoid')
-        #parser.add_argument('--module-ctrl-anneal-rate', type=float,
-        #                    help='temperature anneal rate for ctrl gumbel_sigmoid')
-        parser.add_argument('--print-module-mask', action='store_true',
-                            help='print the current best_selections statistics')
         # fmt: on
 
     @classmethod
@@ -159,17 +140,21 @@ class TransformerModularModel(TransformerModel):
         features_only: bool = False,
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
-        ctrl_temp: Tensor = 1.,
+        ctrl_temperature: Tensor = 1.,
     ):
         """
-        TODO: mode/indices description
+        Args:
+            module_mask: a fixed controller output module mask, whenever
+                an controller is defined in a Transformer layer, a controller
+                output will be ignored and the module_mask will be used instead
+            ctrl_temperature: temperature parameter for Gumbel-Softmax
         """
         encoder_out = self.encoder(
             src_tokens,
             src_lengths=src_lengths,
             module_mask=module_mask,
             return_all_hiddens=return_all_hiddens,
-            ctrl_temp=ctrl_temp,
+            ctrl_temperature=ctrl_temperature,
         )
         x, extra = self.decoder(
             prev_output_tokens,
@@ -180,10 +165,11 @@ class TransformerModularModel(TransformerModel):
             alignment_heads=alignment_heads,
             src_lengths=src_lengths,
             return_all_hiddens=return_all_hiddens,
-            ctrl_temp=ctrl_temp
+            ctrl_temperature=ctrl_temperature
         )
         extra['attn_weights']['encoder'] = encoder_out.enc_self_attn_weights
-        extra['ctrl_output']['encoder'] = encoder_out.ctrl_output
+        for key, value in encoder_out.ctrl_outputs.items():
+            extra['ctrl_outputs'][key] = value
 
         return x, extra
 
@@ -198,20 +184,14 @@ EncoderModularOut = NamedTuple(
         ("src_tokens", Optional[Tensor]),  # B x T
         ("src_lengths", Optional[Tensor]),  # B x 1
         ("enc_self_attn_weights", Optional[List[Tensor]]),  # List[T x T]
-        ("ctrl_output", Optional[Tensor]),  # ModularCtrlOut
+        ("ctrl_outputs", Dict[str, List[Optional[Tensor]]]),  # ModularCtrlOut
     ]
 )
 
 
 class TransformerModularEncoder(TransformerEncoder):
-    """
-    TODO
+    """Transformer encoder with an additional conditional computation support."""
 
-    Args:
-        args (argparse.Namespace): parsed command-line arguments
-        dictionary (~fairseq.data.Dictionary): encoding dictionary
-        embed_tokens (torch.nn.Embedding): input embedding
-    """
     def build_encoder_layer(self, args):
         return TransformerModularEncoderLayer(args)
 
@@ -221,10 +201,14 @@ class TransformerModularEncoder(TransformerEncoder):
         src_lengths,
         module_mask: Optional[Tensor] = None,
         return_all_hiddens: bool = False,
-        ctrl_temp: Tensor = 1.,
+        ctrl_temperature: Tensor = 1.,
     ):
         """
-        TODO: mode/indices description
+        Args:
+            module_mask: a fixed controller output module mask, whenever
+                an controller is defined in a Transformer layer, a controller
+                output will be ignored and the module_mask will be used instead
+            ctrl_temperature: temperature parameter for Gumbel-Softmax
         """
         x, encoder_embedding = self.forward_embedding(src_tokens)
 
@@ -236,13 +220,15 @@ class TransformerModularEncoder(TransformerEncoder):
 
         encoder_states = [] if return_all_hiddens else None
         attn_weights = []
+        enc_ctrl_outputs = []
 
         # encoder layers
         for layer in self.layers:
             x, attn_w, ctrl_out = layer(
                 x, module_mask, encoder_padding_mask,
-                need_head_weights=True, ctrl_temp=ctrl_temp)
+                need_head_weights=True, ctrl_temperature=ctrl_temperature)
             attn_weights.append(attn_w)
+            enc_ctrl_outputs.append(ctrl_out)
             if return_all_hiddens:
                 assert encoder_states is not None
                 encoder_states.append(x)
@@ -258,7 +244,7 @@ class TransformerModularEncoder(TransformerEncoder):
             enc_self_attn_weights=attn_weights,
             src_tokens=None,
             src_lengths=None,
-            ctrl_output=ctrl_out,
+            ctrl_outputs={ 'encoder': enc_ctrl_outputs },
         )
 
     @torch.jit.export
@@ -303,10 +289,21 @@ class TransformerModularEncoder(TransformerEncoder):
             for idx, state in enumerate(encoder_states):
                 encoder_states[idx] = state.index_select(1, new_order)
 
-        ctrl_output = encoder_out.ctrl_output
-        if ctrl_output is not None:
-            new_logits = ctrl_output.logits.index_select(1, new_order)
-            new_mask = ctrl_output.mask.index_select(1, new_order)
+        ctrl_outputs = encoder_out.ctrl_outputs
+        new_ctrl_outputs = {}
+        for key in ctrl_outputs:
+            new_ctrl_outputs[key] = []
+            for ctrl_out in ctrl_outputs[key]:
+                if ctrl_out is None:
+                    new_ctrl_outputs[key].append(ctrl_out)
+                else:
+                    new_logits = ctrl_out.logits.index_select(0, new_order)
+                    new_mask = ctrl_out.mask.index_select(0, new_order)
+                    new_ctrl_out = ModularCtrlOut(
+                        logits=new_logits,
+                        mask=new_mask
+                    )
+                    new_ctrl_outputs[key].append(new_ctrl_out)
 
         # TODO: Should we also reorder attn_weights?
         return EncoderModularOut(
@@ -317,24 +314,13 @@ class TransformerModularEncoder(TransformerEncoder):
             enc_self_attn_weights=encoder_out.enc_self_attn_weights,
             src_tokens=src_tokens,  # B x T
             src_lengths=src_lengths,  # B x 1
-            ctrl_output=ModularCtrlOut(
-                logits=new_logits,
-                mask=new_mask,
-            ),
+            ctrl_outputs=new_ctrl_outputs,
         )
 
 
 class TransformerModularDecoder(TransformerDecoder):
-    """
-    TODO
+    """Transformer decoder with an additional conditional computation support."""
 
-    Args:
-        args (argparse.Namespace): parsed command-line arguments
-        dictionary (~fairseq.data.Dictionary): decoding dictionary
-        embed_tokens (torch.nn.Embedding): output embedding
-        no_encoder_attn (bool, optional): whether to attend to encoder outputs
-            (default: False).
-    """
     def build_decoder_layer(self, args, no_encoder_attn=False):
         return TransformerModularDecoderLayer(args, no_encoder_attn)
 
@@ -349,12 +335,14 @@ class TransformerModularDecoder(TransformerDecoder):
         src_lengths: Optional[Any] = None,
         module_mask: Optional[Dict[str, Tensor]] = None,
         return_all_hiddens: bool = False,
-        ctrl_temp: Tensor = 1.,
+        ctrl_temperature: Tensor = 1.,
     ):
         """
         Args:
-            mode: TODO
-            indices: TODO
+            module_mask: a fixed controller output module mask, whenever
+                an controller is defined in a Transformer layer, a controller
+                output will be ignored and the module_mask will be used instead
+            ctrl_temperature: temperature parameter for Gumbel-Softmax
         """
         x, extra = self.extract_features(
             prev_output_tokens,
@@ -363,7 +351,7 @@ class TransformerModularDecoder(TransformerDecoder):
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
             module_mask=module_mask,
-            ctrl_temp=ctrl_temp,
+            ctrl_temperature=ctrl_temperature,
         )
         if not features_only:
             x = self.output_layer(x)
@@ -378,12 +366,14 @@ class TransformerModularDecoder(TransformerDecoder):
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
         module_mask: Optional[Dict[str, Tensor]] = None,
-        ctrl_temp: Tensor = 1.,
+        ctrl_temperature: Tensor = 1.,
     ):
         """
         Args:
-            mode: TODO
-            indices: TODO
+            module_mask: a fixed controller output module mask, whenever
+                an controller is defined in a Transformer layer, a controller
+                output will be ignored and the module_mask will be used instead
+            ctrl_temperature: temperature parameter for Gumbel-Softmax
         """
 
         if alignment_layer is None:
@@ -423,6 +413,9 @@ class TransformerModularDecoder(TransformerDecoder):
         self_attn_weights = []
         enc_attn_weights = []
 
+        self_ctrl_outputs = []
+        enc_ctrl_outputs = []
+
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
@@ -449,11 +442,14 @@ class TransformerModularDecoder(TransformerDecoder):
                 self_attn_padding_mask=self_attn_padding_mask,
                 need_attn=bool((idx == alignment_layer)),
                 need_head_weights=bool((idx == alignment_layer)),
-                ctrl_temp=ctrl_temp,
+                ctrl_temperature=ctrl_temperature,
             )
 
             self_attn_weights.append(self_attn)
             enc_attn_weights.append(enc_attn)
+
+            self_ctrl_outputs.append(ctrl_out['decoder'])
+            enc_ctrl_outputs.append(ctrl_out['enc_dec'])
 
             inner_states.append(x)
             if enc_attn is not None and idx == alignment_layer:
@@ -477,33 +473,24 @@ class TransformerModularDecoder(TransformerDecoder):
 
         attn_weights = {
             "decoder": self_attn_weights,
-            "encoder_decoder": enc_attn_weights,
+            "enc_dec": enc_attn_weights,
         }
         return x, {
             "attn": [attn],
             "attn_weights": attn_weights,
             "inner_states": inner_states,
-            "ctrl_output": ctrl_out,
+            "ctrl_outputs": {
+                "decoder": self_ctrl_outputs,
+                "enc_dec": enc_ctrl_outputs,
+            },
         }
 
 
 @register_model_architecture("transformer_modular", "transformer_modular")
 def transformer_modular(args):
-    args.encoder_attention_heads_active = getattr(
-        args, 'encoder_attention_heads_active', args.encoder_attention_heads)
-    args.decoder_attention_heads_active = getattr(
-        args, 'decoder_attention_heads_active', args.decoder_attention_heads)
-    #args.decoder_attention_heads_active = getattr(
-    #    args, 'enc_dec_attention_heads_active',
-    #    args.decoder_attention_heads_active)
-    #args.decoder_modular_layer_indices = getattr(
-    #    args, 'enc_dec_modular_layer_indices',
-    #    args.decoder_modular_layer_indices)
     args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'attention')
     args.module_ctrl_avg_tokens = getattr(args, 'module_ctrl_avg_tokens', False)
     args.module_ctrl_hard_samples = getattr(args, 'module_ctrl_hard_samples', False)
-
-    #args.share_encoder_ctrl = getattr(args, 'share_encoder_ctrl', False)
 
     args.module_ctrl_hidden_depth = getattr(
         args, 'module_ctrl_hidden_depth', 0)
