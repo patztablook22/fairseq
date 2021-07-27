@@ -249,6 +249,11 @@ def get_parser(desc, default_task="translation"):
                         help='suffix to add to the checkpoint file name')
     parser.add_argument('--quantization-config-path', default=None,
                         help='path to quantization config file')
+    parser.add_argument('--parameter-freeze-substr', type=str,
+                        help='parameters containing one of the comma (",") separated substrings '
+                             'will not be updated during training')
+    parser.add_argument('--module-ctrl-fixed-mask', default=None, type=str,
+                       help='user provided module mask that should be used instead of module controller output')
 
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():

@@ -343,6 +343,9 @@ class FairseqTask(object):
                   gradient
                 - logging outputs to display while training
         """
+        # HACK: We add update_num to sample to make the info available to the criterion
+        sample["update_num"] = update_num
+
         model.train()
         model.set_num_updates(update_num)
         loss, sample_size, logging_output = criterion(model, sample)

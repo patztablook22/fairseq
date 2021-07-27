@@ -83,24 +83,24 @@ class TranslationModularTask(TranslationTask):
             return s
 
         gen_out = self.inference_step(generator, [model], sample, None)
-        hyps, refs, enc_mod_mask, dec_mod_mask = [], [], [], []
+        hyps, refs = [], []
+        # TODO: get the mask keys from the model
+        modular_masks = { key : [] for key in ['encoder', 'decoder', 'enc_dec'] if "{}_mask" in gen_out[0][0] }
         for i in range(len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))
             refs.append(decode(
                 utils.strip_pad(sample['target'][i], self.tgt_dict.pad()),
                 escape_unk=True,  # don't count <unk> as matches to the hypo
             ))
-            if 'enc_module_mask' in gen_out[i][0]:
-                enc_mod_mask.append(gen_out[i][0]['enc_module_mask'])
-            if 'dec_module_mask' in gen_out[i][0]:
-                dec_mod_mask.append(gen_out[i][0]['dec_module_mask'])
+            for key in modular_masks:
+                assert key in gen_out[i][0]
+                modular_masks[key].append(gen_out[i][0][key])
+
         if self.args.eval_bleu_print_samples:
             logger.info('example hypothesis: ' + hyps[0])
             logger.info('example reference: ' + refs[0])
-            if enc_mod_mask:
-                logger.info('example (encoder) selection: ' + enc_mod_mask[0])
-            if dec_mod_mask:
-                logger.info('example (decoder) selection: ' + dec_mod_mask[0])
+            for key in modular_masks:
+                logger.info('example ({}) modular mask: {}'.format(key, modular_masks[key]))
         if self.args.eval_tokenized_bleu:
             return (
                 sacrebleu.corpus_bleu(hyps, [refs], tokenize='none'),
