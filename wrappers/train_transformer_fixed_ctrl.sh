@@ -6,7 +6,7 @@ GPUMEM="11g"
 
 EXPDIR=
 EVAL_DIR=
-TASKS="id push pop shift unshift reverse"
+TASKS="id flip reverse flip-reverse"
 VALID_TASKS=$TASKS
 
 # General Architecture Details
@@ -14,7 +14,7 @@ EMB_SIZE=128
 FFN_SIZE=$(expr 4 \* $EMB_SIZE)
 ATT_HEADS=8
 DEPTH=1
-SHARED_DICT_OPT=""
+SHARED_DICT_OPT="--share-decoder-input-output-embed"
 
 # Training Reset
 RESET_OPTIMIZER_OPT=
@@ -37,20 +37,23 @@ CTRL_TYPE="attention"
 CTRL_DEPTH=0
 CTRL_DIM=$EMB_SIZE
 CTRL_DROP=0.0
-CTRL_SAMPLING_OPT=""
-CTRL_AVG_TOKENS_OPT=""
+#CTRL_SAMPLING_OPT=""
+#CTRL_AVG_TOKENS_OPT=""
 
+# We do not need ctrl training hyperparams since we use fixed_module_mask for each training task
 # Gumbel Temperature
-CTRL_MIN_TEMP=0.0625
-CTRL_MAX_TEMP=1.
-CTRL_ANNEAL_TYPE="exponential"
-CTRL_ANNEAL_RATE="1e-6"
+#CTRL_MIN_TEMP=0.0625
+#CTRL_MAX_TEMP=1.
+#CTRL_ANNEAL_TYPE="exponential"
+#CTRL_ANNEAL_RATE="1e-6"
 
 # Regularizer
-CTRL_MODULE_COVERAGE=0.5
-CTRL_REGULARIZER_WEIGHT=1.0
+#CTRL_MODULE_COVERAGE=0.5
+#CTRL_REGULARIZER_WEIGHT=1.0
 
 FREEZE_PARAMS=
+#FREEZE_PARAMS='ctrl_,final_layer,fc1,fc2,embed_'
+
 
 HELP=1
 while [[ $# -gt 0 ]]; do
@@ -140,36 +143,36 @@ case $key in
         CTRL_TYPE="$2"
         shift
     ;;
-    --ctrl-hard-samples)
-        CTRL_SAMPLING_OPT="--module-ctrl-hard-samples"
-    ;;
-    --ctrl-avg-tokens)
-        CTRL_AVG_TOKENS_OPT="--module-ctrl-avg-tokens"
-    ;;
-    --ctrl-min-temp)
-        CTRL_MIN_TEMP="$2"
-        shift
-    ;;
-    --ctrl-max-temp)
-        CTRL_MAX_TEMP="$2"
-        shift
-    ;;
-    --ctrl-anneal-type)
-        CTRL_ANNEAL_TYPE="$2"
-        shift
-    ;;
-    --ctrl-anneal-rate)
-        CTRL_ANNEAL_RATE="$2"
-        shift
-    ;;
-    --ctrl-coverage)
-        CTRL_MODULE_COVERAGE="$2"
-        shift
-    ;;
-    --ctrl-regularizer-weight)
-        CTRL_REGULARIZER_WEIGHT="$2"
-        shift
-    ;;
+    #--ctrl-hard-samples)
+    #    CTRL_SAMPLING_OPT="--module-ctrl-hard-samples"
+    #;;
+    #--ctrl-avg-tokens)
+    #    CTRL_AVG_TOKENS_OPT="--module-ctrl-avg-tokens"
+    #;;
+    #--ctrl-min-temp)
+    #    CTRL_MIN_TEMP="$2"
+    #    shift
+    #;;
+    #--ctrl-max-temp)
+    #    CTRL_MAX_TEMP="$2"
+    #    shift
+    #;;
+    #--ctrl-anneal-type)
+    #    CTRL_ANNEAL_TYPE="$2"
+    #    shift
+    #;;
+    #--ctrl-anneal-rate)
+    #    CTRL_ANNEAL_RATE="$2"
+    #    shift
+    #;;
+    #--ctrl-coverage)
+    #    CTRL_MODULE_COVERAGE="$2"
+    #    shift
+    #;;
+    #--ctrl-regularizer-weight)
+    #    CTRL_REGULARIZER_WEIGHT="$2"
+    #    shift
+    #;;
     --freeze-params)
         FREEZE_PARAMS="$2"
         shift
@@ -202,8 +205,8 @@ done
 
 MODEL_DIR="$EXPDIR/transformer_modular"
 MODEL_DIR="$MODEL_DIR.seed-$RANDOM_SEED"
-#MODEL_DIR="$MODEL_DIR.warmup-$WARMUP"
-#MODEL_DIR="$MODEL_DIR.clip-norm-$CLIP_NORM"
+MODEL_DIR="$MODEL_DIR.warmup-$WARMUP"
+MODEL_DIR="$MODEL_DIR.clip-norm-$CLIP_NORM"
 MODEL_DIR="$MODEL_DIR.emb-size-$EMB_SIZE"
 #MODEL_DIR="$MODEL_DIR.ffn-size-$FFN_SIZE"
 MODEL_DIR="$MODEL_DIR.att-heads-$ATT_HEADS"
@@ -214,11 +217,11 @@ MODEL_DIR="$MODEL_DIR.lr-$LR"
 [[ -z "$RESET_OPTIMIZER_OPT" ]] || MODEL_DIR="$MODEL_DIR.reset-optim"
 #[[ -z "$CTRL_AVG_TOKENS_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-avg-tokens"
 #[[ -z "$CTRL_SAMPLING_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-hard-samples"
-MODEL_DIR="$MODEL_DIR.anneal-$CTRL_ANNEAL_TYPE"
-MODEL_DIR="$MODEL_DIR.anneal-rate-$CTRL_ANNEAL_RATE"
-MODEL_DIR="$MODEL_DIR.cov-$CTRL_MODULE_COVERAGE"
-MODEL_DIR="$MODEL_DIR.max-temp-$CTRL_MAX_TEMP"
-MODEL_DIR="$MODEL_DIR.reg-$CTRL_REGULARIZER_WEIGHT"
+#MODEL_DIR="$MODEL_DIR.anneal-type-$CTRL_ANNEAL_TYPE"
+#MODEL_DIR="$MODEL_DIR.coverage-$CTRL_MODULE_COVERAGE"
+#MODEL_DIR="$MODEL_DIR.max-temp-$CTRL_MAX_TEMP"
+#MODEL_DIR="$MODEL_DIR.reg-weight-$CTRL_REGULARIZER_WEIGHT"
+MODEL_DIR="$MODEL_DIR.epochs-$EPOCHS"
 
 
 [[ -d $MODEL_DIR ]] && rm -r $MODEL_DIR
@@ -232,9 +235,10 @@ valid_sets=`echo $VALID_TASKS | sed 's/ /.15.valid,/g;s/$/.15.valid/'`
 for current_task in $TASKS; do
     echo Training $current_task...
 
-    # We freeze the parameters only after finishing the training of the first task
+    MODULE_MASK_OPT=
+    [[ -e "$EXPDIR/data/${current_task}.mask" ]] && MODULE_MASK_OPT="--module-ctrl-fixed-mask $(cat $EXPDIR/data/${current_task}.mask)"
     PARAM_FREEZE_OPT=
-    [[ -e "$MODEL_DIR/checkpoints/checkpoint_last.pt" ]] && [[ -n "$FREEZE_PARAMS" ]] && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
+    [[ -e "$MODEL_DIR/checkpoints/checkpoint_last.pt" ]] && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
 
     jid=$(qsubmit \
         --queue="gpu-troja.q" \
@@ -292,15 +296,11 @@ for current_task in $TASKS; do
             --module-ctrl-hidden-depth $CTRL_DEPTH \
             --module-ctrl-hidden-dim $CTRL_DIM \
             --module-ctrl-word-dropout $CTRL_DROP \
-            $CTRL_SAMPLING_OPT \
-            $CTRL_AVG_TOKENS_OPT \
-            --module-ctrl-max-temperature $CTRL_MAX_TEMP \
-            --module-ctrl-min-temperature $CTRL_MIN_TEMP \
-            --module-ctrl-anneal-type $CTRL_ANNEAL_TYPE \
-            --module-ctrl-exponential-anneal-rate $CTRL_ANNEAL_RATE \
-            --module-coverage-regularizer-ratio $CTRL_MODULE_COVERAGE \
-            --module-coverage-regularizer-weight $CTRL_REGULARIZER_WEIGHT \
+            --module-ctrl-avg-tokens \
+            --module-ctrl-hard-samples \
+            --module-coverage-regularizer-weight 0 \
             $PARAM_FREEZE_OPT \
+            $MODULE_MASK_OPT \
             --save-interval-updates $SAVE_EVERY_N_UPDATES")
 
     jid=`echo $jid | cut -d" " -f3`
@@ -312,12 +312,23 @@ for current_task in $TASKS; do
     cp $MODEL_DIR/checkpoints/checkpoint_last.pt \
         $MODEL_DIR/checkpoints/checkpoint_$current_task.pt
     ckpt_opt="--restore-file $MODEL_DIR/checkpoints/checkpoint_$current_task.pt"
-    bash process_checklist.sh \
-        -t $current_task \
-        --expdir $MODEL_DIR \
-        --tasks "$VALID_TASKS $current_task" \
-        --eval-dir $EVAL_DIR \
-        --translation-options '--print-module-mask' | tee -a $MODEL_DIR/logs/$current_task.eval.log &
 
+    MODULE_MASK_OPT=
+    [[ -e "$EXPDIR/data/${current_task}.mask" ]] && MODULE_MASK_OPT="--module-mask $(cat $EXPDIR/data/${current_task}.mask)"
+
+    echo "Finished $current_task. Evaluating..."
+
+    for eval_task in $TASKS; do
+        EVAL_MASK_OPT=$MODULE_MASK_OPT
+        [[ -e "$EXPDIR/data/${eval_task}.mask" ]] && EVAL_MASK_OPT="--module-mask $(cat $EXPDIR/data/${eval_task}.mask)"
+
+        bash process_checklist.sh \
+            -t $current_task \
+            --expdir $MODEL_DIR \
+            --tasks "$VALID_TASKS $current_task" \
+            --eval-dir $EVAL_DIR \
+            $EVAL_MASK_OPT \
+            --translation-options "--print-module-mask" | tee -a $MODEL_DIR/logs/$current_task.eval.log &
+    done
     epochs=`expr $epochs + $EPOCHS`
 done
