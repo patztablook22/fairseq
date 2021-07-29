@@ -214,9 +214,9 @@ def train(args, trainer, task, epoch_itr, max_update=math.inf):
     valid_subsets = args.valid_subset.split(',')
     for samples in progress:
         with metrics.aggregate('train_inner'):
-            # HACK: We want to pass the epoch number to the criterion through the samples
+            # HACK: We want to pass the epoch length to the criterion during training
             for s in samples:
-                s["epoch_num"] = progress.wrapped_bar.epoch
+                s["num_updates_per_epoch"] = len(progress.wrapped_bar.iterable)
             samples = [add_fixed_mask_to_input(s, args) for s in samples]
             log_output = trainer.train_step(samples)
             if log_output is None:  # OOM, overflow, ...
