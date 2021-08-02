@@ -234,7 +234,9 @@ for current_task in $TASKS; do
 
     # We freeze the parameters only after finishing the training of the first task
     PARAM_FREEZE_OPT=
-    [[ -e "$MODEL_DIR/checkpoints/checkpoint_last.pt" ]] && [[ -n "$FREEZE_PARAMS" ]] && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
+    [[ -e "$MODEL_DIR/checkpoints/checkpoint_last.pt" ]] && \
+        [[ -n "$FREEZE_PARAMS" ]] && \
+        PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
 
     jid=$(qsubmit \
         --queue="gpu-troja.q" \
