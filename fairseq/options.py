@@ -417,6 +417,8 @@ def add_speech_generation_args(parser):
                        help='if set, uses attention feedback to compute and print alignment to source tokens')
     group.add_argument('--print-module-mask', action='store_true',
                        help='if set, print module mask(s) from modular controller(s)')
+    group.add_argument('--print-module-probs', action='store_true',
+                       help='if set, print module probabilities from modular controller(s)')
 
     group.add_argument('--print-step', action='store_true')
 

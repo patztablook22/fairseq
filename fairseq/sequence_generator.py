@@ -1051,6 +1051,14 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
                 for m in ctrl_out.mask[i]
             )
 
+        def get_module_probs_string(ctrl_out, i):
+            if ctrl_out is None:
+                return ''
+            return ','.join(
+                ''.join((torch.sigmoid(m)).float().cpu().numpy().astype(np.str))
+                for m in ctrl_out.logits[i]
+            )
+
         for i in range(bsz * beam_size):
             # Mask shape: (len, bsz, num. heads)
             for key in self.ctrl_keys:
@@ -1060,6 +1068,17 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
                         for layer_num, ctrl_out in enumerate(ctrl_outputs[key])
                     ])
                     finalized[i // beam_size][i % beam_size]['{}_mask'.format(key)] = module_mask
+
+        for i in range(bsz * beam_size):
+            # Mask shape: (len, bsz, num. heads)
+            for key in self.ctrl_keys:
+                if key in ctrl_outputs:
+                    module_mask = ';'.join([
+                        '{}:{}'.format(layer_num, get_module_probs_string(ctrl_out, i))
+                        for layer_num, ctrl_out in enumerate(ctrl_outputs[key])
+                    ])
+                    finalized[i // beam_size][i % beam_size]['{}_probs'.format(key)] = module_mask
+
         return finalized
 
     def _prepare_batch_for_module_mask(self, sample, hypothesis):

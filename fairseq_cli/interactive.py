@@ -226,7 +226,6 @@ def main(cfg: FairseqConfig):
                 if module_mask is not None:
                     module_mask = module_mask.cuda()
 
-
             sample = {
                 "net_input": {
                     "src_tokens": src_tokens,
@@ -312,6 +311,9 @@ def main(cfg: FairseqConfig):
                     for key in hypo:
                         if "_mask" in key:
                             print('M{}-{}\t{}'.format(key, id, hypo[key]))
+                    for key in hypo:
+                        if "_probs" in key:
+                            print('M{}_probs-{}\t{}'.format(key, id, hypo[key]))
 
         # update running id_ counter
         start_id += len(inputs)
