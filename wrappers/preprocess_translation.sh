@@ -1,16 +1,17 @@
 #!/bin/bash
 set -e
 
-WORKERS=20
+WORKERS=10
 
 EXP_DIR=
 
 SRC=de
 TGT=en
 
-DATA_DIR="custom_examples/translation/iwslt14.tokenized.de-en"
-VALID_SETS="valid"
-TEST_SETS="test"
+DATA_DIR="custom_examples/translation/iwslt14_deen"
+TRAIN_SET="iwslt14"
+VALID_SETS="newstest iwslt17_tst"
+TEST_SETS="newstest iwslt17_tst"
 
 JOINED_DICT_OPT=
 
@@ -37,6 +38,10 @@ case $key in
         DATA_DIR="$2"
         shift
     ;;
+    --train-set)
+        TRAIN_SET="$2"
+        shift
+    ;;
     --valid-sets)
         VALID_SETS="$2"
         shift
@@ -59,21 +64,53 @@ esac
 shift
 done
 
-VALID_SETS=`echo $VALID_SETS | sed "s#^#$DATA_DIR/#;s#,#,$DATA_DIR/#g"`
-TEST_SETS=`echo $TEST_SETS | sed "s#^#$DATA_DIR/#;s#,#,$DATA_DIR/#g"`
+LANG=$SRC-$TGT
 
-VALID_SET_OPT=""
-[[ -n $VALID_SETS ]] && VALID_SET_OPT="--validpref $VALID_SETS"
-TEST_SET_OPT=""
-[[ -n $TEST_SETS ]] && TEST_SET_OPT="--testpref $TEST_SETS"
-
-mkdir $EXP_DIR/data
-fairseq-preprocess \
+mkdir -p $EXP_DIR/data
+python preprocess.py \
     --source-lang $SRC \
     --target-lang $TGT \
-    --trainpref $DATA_DIR/train \
-    $VALID_SET_OPT \
-    $TEST_SET_OPT \
+    --trainpref $DATA_DIR/$TRAIN_SET.train \
     --destdir $EXP_DIR/data \
     $JOINED_DICT_OPT \
     --workers $WORKERS
+for suf in bin idx; do
+    for l in $SRC $TGT; do
+        mv $EXP_DIR/data/train.$LANG.$l.$suf \
+            $EXP_DIR/data/$TRAIN_SET.train.$LANG.$l.$suf
+    done
+done
+
+for dataset in $VALID_SETS; do
+    python preprocess.py \
+        --source-lang $SRC \
+        --target-lang $TGT \
+        --validpref $DATA_DIR/$dataset.valid \
+        --destdir $EXP_DIR/data \
+        --srcdict $EXP_DIR/data/dict.$SRC.txt \
+        --tgtdict $EXP_DIR/data/dict.$TGT.txt \
+        --workers $WORKERS
+    for suf in bin idx; do
+        for l in $SRC $TGT; do
+            mv $EXP_DIR/data/valid.$LANG.$l.$suf \
+                $EXP_DIR/data/$dataset.valid.$LANG.$l.$suf
+        done
+    done
+done
+
+for dataset in $TEST_SETS; do
+    python preprocess.py \
+        --source-lang $SRC \
+        --target-lang $TGT \
+        --testpref $DATA_DIR/$dataset.test \
+        --destdir $EXP_DIR/data \
+        --srcdict $EXP_DIR/data/dict.$SRC.txt \
+        --tgtdict $EXP_DIR/data/dict.$TGT.txt \
+        --workers $WORKERS
+    for suf in bin idx; do
+        for l in $SRC $TGT; do
+            mv $EXP_DIR/data/test.$LANG.$l.$suf \
+                $EXP_DIR/data/$dataset.test.$LANG.$l.$suf
+        done
+    done
+done

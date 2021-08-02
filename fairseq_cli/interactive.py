@@ -152,23 +152,24 @@ def main(args):
             src_tokens = batch.src_tokens
             src_lengths = batch.src_lengths
 
-            module_mask = args.module_ctrl_fixed_mask
-            if module_mask is not None:
-                module_mask = torch.Tensor([int(x) for x in module_mask.split(',')]).float()
-
             if use_cuda:
                 src_tokens = src_tokens.cuda()
                 src_lengths = src_lengths.cuda()
-                if module_mask is not None:
-                    module_mask = module_mask.cuda()
 
             sample = {
                 'net_input': {
                     'src_tokens': src_tokens,
                     'src_lengths': src_lengths,
-                    'module_mask': module_mask,
                 },
             }
+
+            # Add fixed module mask, if available
+            module_mask = args.module_ctrl_fixed_mask
+            if module_mask is not None:
+                module_mask = torch.Tensor([int(x) for x in module_mask.split(',')]).float()
+                if use_cuda:
+                    module_mask = module_mask.cuda()
+                sample['module_mask'] = module_mask
 
             translations = task.inference_step(generator, models, sample)
             for i, (id, hypos) in enumerate(zip(batch.ids.tolist(), translations)):
@@ -215,6 +216,10 @@ def main(args):
                 for key in hypo:
                     if "_mask" in key:
                         print('M{}-{}\t{}'.format(key, id, hypo[key]))
+                # TODO: get the mask keys directly from the model
+                for key in hypo:
+                    if "_probs" in key:
+                        print('Probs-{}-{}\t{}'.format(key, id, hypo[key]))
 
         # update running id counter
         start_id += len(inputs)
