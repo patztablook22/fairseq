@@ -151,15 +151,18 @@ def main(args):
         for batch in make_batches(inputs, args, task, max_positions, encode_fn):
             src_tokens = batch.src_tokens
             src_lengths = batch.src_lengths
+            ctrl_threshold = torch.tensor(args.module_ctrl_threshold)
 
             if use_cuda:
                 src_tokens = src_tokens.cuda()
                 src_lengths = src_lengths.cuda()
+                ctrl_threshold = ctrl_threshold.cuda()
 
             sample = {
                 'net_input': {
                     'src_tokens': src_tokens,
                     'src_lengths': src_lengths,
+                    'ctrl_threshold': ctrl_threshold,
                 },
             }
 

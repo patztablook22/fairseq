@@ -253,7 +253,7 @@ def get_parser(desc, default_task="translation"):
                         help='parameters containing one of the comma (",") separated substrings '
                              'will not be updated during training')
     parser.add_argument('--module-ctrl-fixed-mask', default=None, type=str,
-                       help='user provided module mask that should be used instead of module controller output')
+                        help='user provided module mask that should be used instead of module controller output')
 
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():
@@ -597,6 +597,8 @@ def add_generation_args(parser):
                        help='if set, print module mask(s) from modular controller(s)')
     group.add_argument('--print-module-probs', action='store_true',
                        help='if set, print module probabilities from modular controller(s)')
+    group.add_argument('--module-ctrl-threshold', default=0.5, type=float,
+                       help='set the masking threshold for the sigmoid function output in module controllers during inference')
 
     group.add_argument('--print-step', action='store_true')
 

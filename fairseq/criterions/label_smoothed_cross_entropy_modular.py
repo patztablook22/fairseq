@@ -137,12 +137,12 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
             steps_per_epoch = sample["num_updates_per_epoch"]
             if self.module_ctrl_anneal_type == 'exponential':
                 self.temp = exponential_annealing(
-                    self.temp, step, self.module_ctrl_anneal_rate,
+                    self.temp, step, self.module_ctrl_exponential_anneal_rate,
                     self.module_ctrl_min_temperature)
             elif self.module_ctrl_anneal_type == 'cosine':
                 steps_per_epoch *= self.module_ctrl_cosine_reset_every_n_epochs
-                step = step / steps_per_epoch
-                if step == 0:
+                step = step % steps_per_epoch
+                if step != 0:
                     self.module_ctrl_max_temperature *= self.module_ctrl_cosine_reset_decay
                 self.temp = cosine_annealing(
                     step, steps_per_epoch,

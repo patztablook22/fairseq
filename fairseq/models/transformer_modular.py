@@ -140,6 +140,7 @@ class TransformerModularModel(TransformerModel):
         features_only: bool = False,
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
+        ctrl_threshold: Tensor = 0.5,
         ctrl_temperature: Tensor = 1.,
     ):
         """
@@ -147,6 +148,8 @@ class TransformerModularModel(TransformerModel):
             module_mask: a fixed controller output module mask, whenever
                 an controller is defined in a Transformer layer, a controller
                 output will be ignored and the module_mask will be used instead
+            ctrl_threshold: threshold for the positive prediction in
+                the controller (default == 0.5)
             ctrl_temperature: temperature parameter for Gumbel-Softmax
         """
         encoder_out = self.encoder(
@@ -154,6 +157,7 @@ class TransformerModularModel(TransformerModel):
             src_lengths=src_lengths,
             module_mask=module_mask,
             return_all_hiddens=return_all_hiddens,
+            ctrl_threshold=ctrl_threshold,
             ctrl_temperature=ctrl_temperature,
         )
         x, extra = self.decoder(
@@ -165,6 +169,7 @@ class TransformerModularModel(TransformerModel):
             alignment_heads=alignment_heads,
             src_lengths=src_lengths,
             return_all_hiddens=return_all_hiddens,
+            ctrl_threshold=ctrl_threshold,
             ctrl_temperature=ctrl_temperature
         )
         extra['attn_weights']['encoder'] = encoder_out.enc_self_attn_weights
@@ -201,6 +206,7 @@ class TransformerModularEncoder(TransformerEncoder):
         src_lengths,
         module_mask: Optional[Tensor] = None,
         return_all_hiddens: bool = False,
+        ctrl_threshold: Tensor = 0.5,
         ctrl_temperature: Tensor = 1.,
     ):
         """
@@ -208,6 +214,8 @@ class TransformerModularEncoder(TransformerEncoder):
             module_mask: a fixed controller output module mask, whenever
                 an controller is defined in a Transformer layer, a controller
                 output will be ignored and the module_mask will be used instead
+            ctrl_threshold: threshold for the positive prediction in
+                the controller (default == 0.5)
             ctrl_temperature: temperature parameter for Gumbel-Softmax
         """
         x, encoder_embedding = self.forward_embedding(src_tokens)
@@ -226,7 +234,9 @@ class TransformerModularEncoder(TransformerEncoder):
         for layer in self.layers:
             x, attn_w, ctrl_out = layer(
                 x, module_mask, encoder_padding_mask,
-                need_head_weights=True, ctrl_temperature=ctrl_temperature)
+                need_head_weights=True,
+                ctrl_threshold=ctrl_threshold,
+                ctrl_temperature=ctrl_temperature)
             attn_weights.append(attn_w)
             enc_ctrl_outputs.append(ctrl_out)
             if return_all_hiddens:
@@ -335,6 +345,7 @@ class TransformerModularDecoder(TransformerDecoder):
         src_lengths: Optional[Any] = None,
         module_mask: Optional[Dict[str, Tensor]] = None,
         return_all_hiddens: bool = False,
+        ctrl_threshold: Tensor = 0.5,
         ctrl_temperature: Tensor = 1.,
     ):
         """
@@ -342,6 +353,8 @@ class TransformerModularDecoder(TransformerDecoder):
             module_mask: a fixed controller output module mask, whenever
                 an controller is defined in a Transformer layer, a controller
                 output will be ignored and the module_mask will be used instead
+            ctrl_threshold: threshold for the positive prediction in
+                the controller (default == 0.5)
             ctrl_temperature: temperature parameter for Gumbel-Softmax
         """
         x, extra = self.extract_features(
@@ -351,6 +364,7 @@ class TransformerModularDecoder(TransformerDecoder):
             alignment_layer=alignment_layer,
             alignment_heads=alignment_heads,
             module_mask=module_mask,
+            ctrl_threshold=ctrl_threshold,
             ctrl_temperature=ctrl_temperature,
         )
         if not features_only:
@@ -366,6 +380,7 @@ class TransformerModularDecoder(TransformerDecoder):
         alignment_layer: Optional[int] = None,
         alignment_heads: Optional[int] = None,
         module_mask: Optional[Dict[str, Tensor]] = None,
+        ctrl_threshold: Tensor = 0.5,
         ctrl_temperature: Tensor = 1.,
     ):
         """
@@ -373,6 +388,8 @@ class TransformerModularDecoder(TransformerDecoder):
             module_mask: a fixed controller output module mask, whenever
                 an controller is defined in a Transformer layer, a controller
                 output will be ignored and the module_mask will be used instead
+            ctrl_threshold: threshold for the positive prediction in
+                the controller (default == 0.5)
             ctrl_temperature: temperature parameter for Gumbel-Softmax
         """
 
@@ -442,6 +459,7 @@ class TransformerModularDecoder(TransformerDecoder):
                 self_attn_padding_mask=self_attn_padding_mask,
                 need_attn=bool((idx == alignment_layer)),
                 need_head_weights=bool((idx == alignment_layer)),
+                ctrl_threshold=ctrl_threshold,
                 ctrl_temperature=ctrl_temperature,
             )
 
