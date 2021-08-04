@@ -367,6 +367,10 @@ class SequenceGenerator(nn.Module):
                     encoder_outs,
                     incremental_states,
                     self.temperature,
+                    module_mask=(
+                        net_input['module_mask']
+                        if "module_mask" in net_input else None
+                    ),
                 )
 
             if self.lm_model is not None:
@@ -818,6 +822,7 @@ class EnsembleModel(nn.Module):
         encoder_outs: List[Dict[str, List[Tensor]]],
         incremental_states: List[Dict[str, Dict[str, Optional[Tensor]]]],
         temperature: float = 1.0,
+        module_mask: Optional[Tensor] = None,
     ):
         log_probs = []
         avg_attn: Optional[Tensor] = None
@@ -1029,6 +1034,9 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
         module_mask = None
         if "module_mask" in sample["net_input"]:
             module_mask = sample["net_input"]["module_mask"]
+        ctrl_threshold = None
+        if "ctrl_threshold" in sample["net_input"]:
+            ctrl_threshold = sample["net_input"]["ctrl_threshold"]
 
         bsz = src_tokens.shape[0]
         beam_size = self.beam_size
@@ -1040,7 +1048,8 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
             src_tokens,
             src_lengths,
             prev_output_tokens,
-            module_mask
+            module_mask,
+            ctrl_threshold,
         )
 
         def get_module_mask_string(ctrl_out, i):
@@ -1055,7 +1064,7 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
             if ctrl_out is None:
                 return ''
             return ','.join(
-                ''.join((torch.sigmoid(m)).float().cpu().numpy().astype(np.str))
+                '#'.join((torch.sigmoid(m)).float().cpu().numpy().astype(np.str))
                 for m in ctrl_out.logits[i]
             )
 
@@ -1217,7 +1226,9 @@ class EnsembleModelWithModuleMask(EnsembleModel):
                         src_tokens,
                         src_lengths,
                         prev_output_tokens,
-                        module_mask=None):
+                        module_mask=None,
+                        ctrl_threshold=0.5
+    ):
         ctrl_outputs = []
 
         # TODO: how do we treat module masks in ensembles?
@@ -1226,11 +1237,21 @@ class EnsembleModelWithModuleMask(EnsembleModel):
             raise NotImplementedError("transformer_modular currently does not support ensemble decoding")
 
         for i, model in enumerate(self.models):
-            decoder_out = model(
+            encoder_out = model.encoder(
                 src_tokens,
                 src_lengths,
-                prev_output_tokens,
                 module_mask=module_mask,
+                ctrl_threshold=ctrl_threshold,
+            )
+            # We split the encoding and decoding stage so we can pass None incremental_state to the decoder
+            # to apply futuru_mask to the prev_output_tokens in the controller
+            decoder_out = model.decoder(
+                prev_output_tokens,
+                encoder_out=encoder_out,
+                incremental_state=None,
+                module_mask=module_mask,
+                src_lengths=src_lengths,
+                ctrl_threshold=ctrl_threshold,
             )
             ctrl_outputs.append(decoder_out[1]['ctrl_outputs'])
 
@@ -1239,12 +1260,16 @@ class EnsembleModelWithModuleMask(EnsembleModel):
         return ctrl_outputs[0]
 
     @torch.jit.export
-    def forward_decoder(
-        self, tokens, encoder_outs: List[EncoderOut], temperature: float = 1.0, module_mask=None
+    def forward_decoder(self,
+                        tokens,
+                        encoder_outs: List[EncoderOut],
+                        temperature: float = 1.0,
+                        module_mask=None,
+                        ctrl_threshold=0.5,
     ):
         """Identical to the parent method.
 
-        Only difference is passing of module_mask parameter to the decoder.
+        Only difference is passing of module_mask and ctrl_threshold parameter to the decoder.
         """
         log_probs = []
         avg_attn: Optional[Tensor] = None
@@ -1258,7 +1283,8 @@ class EnsembleModelWithModuleMask(EnsembleModel):
                     tokens,
                     encoder_out=encoder_out,
                     incremental_state=self.incremental_states[i],
-                    module_mask=module_mask
+                    module_mask=module_mask,
+                    ctrl_threshold=ctrl_threshold,
                 )
             else:
                 decoder_out = model.decoder.forward(tokens, encoder_out=encoder_out, module_mask=module_mask)
@@ -1301,7 +1327,6 @@ class EnsembleModelWithModuleMask(EnsembleModel):
         if avg_attn is not None:
             avg_attn.div_(self.models_size)
         return avg_probs, avg_attn
-
 
     def _average_ctrl_outputs(self, ctrl_outputs):
         raise NotImplementedError("transformer_modular currently does not support ensemble decoding")

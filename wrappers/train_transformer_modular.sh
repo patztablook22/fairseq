@@ -319,7 +319,8 @@ for current_task in $TASKS; do
         --expdir $MODEL_DIR \
         --tasks "$VALID_TASKS $current_task" \
         --eval-dir $EVAL_DIR \
-        --translation-options '--print-module-mask' | tee -a $MODEL_DIR/logs/$current_task.eval.log &
+        --translation-options '--print-module-mask --print-module-probs' | \
+        tee -a $MODEL_DIR/logs/$current_task.eval.log &
 
     epochs=`expr $epochs + $EPOCHS`
 done

@@ -419,6 +419,8 @@ def add_speech_generation_args(parser):
                        help='if set, print module mask(s) from modular controller(s)')
     group.add_argument('--print-module-probs', action='store_true',
                        help='if set, print module probabilities from modular controller(s)')
+    group.add_argument('--module-ctrl-threshold', default=0.5, type=float,
+                       help='set the masking threshold for the sigmoid function output in module controllers during inference')
 
     group.add_argument('--print-step', action='store_true')
 
