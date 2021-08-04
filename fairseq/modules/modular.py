@@ -15,7 +15,7 @@ from torch.nn import Parameter
 from fairseq.incremental_decoding_utils import with_incremental_state
 
 
-_EPS = 1e-6
+_EPS = 1e-9
 
 
 def masked_mean(x, mask, axis=None, keepdim=False):
@@ -130,7 +130,7 @@ class ModularCtrl(nn.Module):
             if future_mask is not None:
                 future_mask =  future_mask.reshape(1, src_len, src_len, 1)
                 x = x.unsqueeze(1).repeat([1, src_len, 1, 1])
-                x = masked_mean(x, mask=future_mask, axis=1)
+                x = masked_mean(x, mask=future_mask, axis=2)
 
                 x *= input_mask.float()
             else:
@@ -146,7 +146,8 @@ class ModularCtrl(nn.Module):
         padding_mask: Optional[Tensor] = None,
         future_mask: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
-        temperature=1.0
+        threshold: Tensor = 0.5,
+        temperature: Tensor = 1.0
     ) -> ModularCtrlOut:
         """
         Compute a module mask based on the input sequence x.
@@ -154,6 +155,7 @@ class ModularCtrl(nn.Module):
         Args:
             padding_mask: sequence padding mask
             future_mask: mask for the following tokens
+            threshold: inference-time threshold for the positive mask prediction
             temperature: temperature for Gumbel-Softmax
 
         Returns:
@@ -209,7 +211,7 @@ class ModularCtrl(nn.Module):
             module_mask = gumbel_sigmoid(
                 logits, temperature, hard=self.hard_samples)
         else:
-            module_mask = (logits > 0.).float()
+            module_mask = (torch.sigmoid(logits) > threshold).float()
 
         return ModularCtrlOut(
             logits=logits,

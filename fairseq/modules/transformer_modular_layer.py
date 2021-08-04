@@ -59,6 +59,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         encoder_padding_mask,
         attn_mask: Optional[Tensor] = None,
         need_head_weights: bool = False,
+        ctrl_threshold: Tensor = 0.5,
         ctrl_temperature: Tensor = 1.,
     ):
         """
@@ -77,6 +78,8 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             included in attentioni
             need_head_weights (bool, optional): return attention weights
                 for each head (default: return average over heads).
+            ctrl_threshold: threshold for the positive prediction in
+                the controller (default == 0.5)
             ctrl_temperature: temperature parameter for Gumbel-Softmax
 
         Returns:
@@ -105,6 +108,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             ctrl_out = self.ctrl_self(
                 x,
                 padding_mask=encoder_padding_mask,
+                threshold=ctrl_threshold,
                 temperature=ctrl_temperature)
             self_mod_mask = ctrl_out.mask
 
@@ -213,6 +217,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         self_attn_padding_mask: Optional[torch.Tensor] = None,
         need_attn: bool = False,
         need_head_weights: bool = False,
+        ctrl_threshold: Tensor = 0.5,
         ctrl_temperature: Tensor = 1.,
     ):
         """
@@ -227,6 +232,8 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             need_attn (bool, optional): return attention weights
             need_head_weights (bool, optional): return attention weights
                 for each head (default: return average over heads).
+            ctrl_threshold: threshold for the positive prediction in
+                the controller (default == 0.5)
             ctrl_temperature: temperature parameter for Gumbel-Softmax
 
         Returns:
@@ -287,6 +294,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                 padding_mask=self_attn_padding_mask,
                 future_mask=self_attn_mask,
                 incremental_state=incremental_state,
+                threshold=ctrl_threshold,
                 temperature=ctrl_temperature)
             self_mod_mask = ctrl_self_out.mask
 
@@ -301,7 +309,6 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             need_head_weights=need_head_weights,
             attn_mask=self_attn_mask,
         )
-
         x = F.dropout(x, p=self.dropout, training=self.training)
         x = residual + x
         if not self.normalize_before:
@@ -332,6 +339,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                     padding_mask=self_attn_padding_mask,
                     future_mask=self_attn_mask,
                     incremental_state=incremental_state,
+                    threshold=ctrl_threshold,
                     temperature=ctrl_temperature)
                 enc_mod_mask = ctrl_enc_out.mask
 
@@ -346,7 +354,6 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                 need_weights=need_attn or (not self.training and self.need_attn),
                 need_head_weights=need_head_weights,
             )
-
             x = F.dropout(x, p=self.dropout, training=self.training)
             x = residual + x
             if not self.normalize_before:
