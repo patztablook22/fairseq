@@ -176,13 +176,21 @@ class Trainer(object):
             )
         )
         if self.args.parameter_freeze_substr is not None:
-            substrings = self.args.parameter_freeze_substr.split(',')
-            frozen_params = list(
-                filter(
-                    lambda p: any([s in p[0] for s in substrings]),
-                    named_params
+            substrings = self.args.parameter_freeze_substr.strip('~').split(',')
+            if self.args.parameter_freeze_substr[0] == '~':
+                frozen_params = list(
+                    filter(
+                        lambda p: all([s not in p[0] for s in substrings]),
+                        named_params
+                    )
                 )
-            )
+            else:
+                frozen_params = list(
+                    filter(
+                        lambda p: any([s in p[0] for s in substrings]),
+                        named_params
+                    )
+                )
             for _, t in frozen_params:
                 t.requires_grad = False
             logger.info('Following parameter weights will be frozen during training: {}'.format([p[0] for p in frozen_params]))
