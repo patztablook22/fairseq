@@ -5,8 +5,8 @@ CKPT_ID=${2:-"_best"}
 PREFIX=${3:-"results"}
 OPTS=${4:-""}
 
-BEAM_SIZE=4
-LP=0.6
+BEAM_SIZE=${5:-4}
+LP=${6:-0.6}
 
 #CKPT_ID="_last"
 #CKPT_ID="_best"

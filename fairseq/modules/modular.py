@@ -26,7 +26,9 @@ def masked_mean(x, mask, axis=None, keepdim=False):
 def sample_gumbel(shape, device='cpu'):
     U_1 = torch.rand(shape).to(device)
     U_2 = torch.rand(shape).to(device)
-    return -torch.log(torch.log(U_1) / torch.log(U_2))
+    return -torch.log(
+        (torch.log(U_1 + _EPS) - _EPS) / (torch.log(U_2 + _EPS) - _EPS)
+    )
 
 
 def gumbel_sigmoid_sample(logits, temperature):
@@ -34,19 +36,26 @@ def gumbel_sigmoid_sample(logits, temperature):
     return torch.sigmoid(y / temperature)
 
 
-def gumbel_sigmoid(logits, temperature=1.0, hard=True):
-    y = gumbel_sigmoid_sample(logits, temperature)
+def gaussian_sigmoid_sample(logits, temperature):
+    # We want to progressively increase the noise during the training
+    # to force more hard outputs (the temperature is always decreasing)
+    y = logits + (torch.normal(0., 1., logits.size()) / temperature)
+    return torch.sigmoid(y)
 
-    if hard:
-        y_hard = (y > 0.5).float()
-        return (y_hard - y).detach() + y
-    return y
+
+def gumbel_sigmoid(logits, temperature=1.0):
+    return gumbel_sigmoid_sample(logits, temperature)
+
+
+def gaussian_sigmoid(logits, temperature=1.0):
+    return gaussian_sigmoid(logits, temperature)
 
 
 ModularCtrlOut = NamedTuple(
     "ModularCtrlOut",
     [
         ("logits", Tensor),
+        ("sampled_probs", Tensor),
         ("mask", Tensor),
     ]
 )
@@ -97,6 +106,8 @@ class ModularCtrl(nn.Module):
             if hidden_dim is None:
                 raise ValueError("controller hidden_dim cannot be NoneType if hidden_depth > 0")
             modules.append(nn.Linear(input_dim, hidden_dim))
+            # TODO: change to GeLU?
+            # TODO: pass via parameter
             modules.append(nn.ReLU())
             modules.append(nn.Dropout(p=dropout))
             input_dim = hidden_dim
@@ -155,10 +166,17 @@ class ModularCtrl(nn.Module):
 
         Returns:
             tuple of:
-                mask logits of `(batch, seq_len, n_modules)` or `(batch, 1, n_modules)`
-                module mask (same shape)
+                logits: mask logits of `(batch, seq_len, n_modules)` or `(batch, 1, n_modules)`
+                sampled_probs: probability of the positive mask value based from logits (+ sampled noise during
+                    training), same shape as logits
+                module_mask: hard-thresholded sampled_probs (same shape as logits)
         """
         x = x.transpose(0, 1)
+
+        # HACK: we want to guarantee that the temperature will always be positive
+        # TODO: find out which scheduler can set the non-positive value
+        if temperature <= 0:
+            temperature = _EPS
 
         if future_mask is not None:
             # future_mask contains values to mask decoder self-attn "before_softmax"
@@ -202,13 +220,21 @@ class ModularCtrl(nn.Module):
             logits = logits[:, -x.size(1):]
 
         if self.training:
-            module_mask = gumbel_sigmoid(
-                logits, temperature, hard=self.hard_samples)
+            sampled_probs = gumbel_sigmoid(logits, temperature)
+            sampled_probs = ModularCtrl._mask_output_probs(sampled_probs, padding_mask)
+            module_mask = sampled_probs
+            if self.hard_samples:
+                module_mask = (module_mask > 0.5).float()
+                module_mask = (module_mask - sampled_probs).detach() + sampled_probs
+
         else:
-            module_mask = (torch.sigmoid(logits) > threshold).float()
+            sampled_probs = torch.sigmoid(logits)
+            sampled_probs = ModularCtrl._mask_output_probs(sampled_probs, padding_mask)
+            module_mask = (sampled_probs > threshold).float()
 
         return ModularCtrlOut(
             logits=logits,
+            sampled_probs=sampled_probs,
             mask=module_mask
         )
 
@@ -246,6 +272,15 @@ class ModularCtrl(nn.Module):
         else:
             new_padding_mask = prev_padding_mask
         return new_padding_mask
+
+    @staticmethod
+    def _mask_output_probs(x, padding_mask):
+        if padding_mask is None:
+            return x
+        padding_mask = ~padding_mask.unsqueeze(-1)
+        if x.size(1) != padding_mask.size(1):
+            return x * torch.any(padding_mask.bool(), 1, keepdim=True).float()
+        return x * padding_mask
 
     @torch.jit.export
     def reorder_incremental_state(

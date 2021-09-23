@@ -176,7 +176,7 @@ def main(args):
                 module_mask = torch.Tensor([int(x) for x in module_mask.split(',')]).float()
                 if use_cuda:
                     module_mask = module_mask.cuda()
-                sample['module_mask'] = module_mask
+                sample['net_input']['module_mask'] = module_mask
 
             translations = task.inference_step(generator, models, sample)
             for i, (id, hypos) in enumerate(zip(batch.ids.tolist(), translations)):

@@ -1,11 +1,12 @@
 #!/bin/bash
 set -e
 
-JOB_PRIORITY=-90
+JOB_PRIORITY=-60
 GPUMEM="11g"
 
 EXPDIR=
 EVAL_DIR=
+EXP_SUFFIX=
 TASKS="id push pop shift unshift reverse"
 VALID_TASKS=$TASKS
 
@@ -14,7 +15,7 @@ EMB_SIZE=128
 FFN_SIZE=$(expr 4 \* $EMB_SIZE)
 ATT_HEADS=8
 DEPTH=1
-SHARED_DICT_OPT=""
+SHARED_DICT_OPT=
 
 # Training Reset
 RESET_OPTIMIZER_OPT=
@@ -32,6 +33,11 @@ PATIENCE=0
 KEEP_N_CHECKPOINTS=1
 SAVE_EVERY_N_UPDATES=0
 
+# Validation - Beam Search Details
+VALID_BEAM_SIZE=5
+VALID_MAX_LEN_A=1.2
+VALID_MAX_LEN_B=10
+
 # Modular Details
 CTRL_TYPE="attention"
 CTRL_DEPTH=0
@@ -45,10 +51,14 @@ CTRL_MIN_TEMP=0.0625
 CTRL_MAX_TEMP=1.
 CTRL_ANNEAL_TYPE="exponential"
 CTRL_ANNEAL_RATE="1e-6"
+CTRL_COSINE_DECAY=0.95
+CTRL_COSINE_RESET=1.
 
 # Regularizer
-CTRL_MODULE_COVERAGE=0.5
-CTRL_REGULARIZER_WEIGHT=1.0
+CTRL_KL_DIV_RATIO=0.5
+CTRL_KL_DIV_WEIGHT=0.
+CTRL_BUDGET_RATIO=0.5
+CTRL_BUDGET_WEIGHT=0.
 
 FREEZE_PARAMS=
 
@@ -58,6 +68,10 @@ key="$1"
 case $key in
     -e|--expdir)
         EXPDIR="$2"
+        shift
+    ;;
+    --exp-suffix)
+        EXP_SUFFIX="$2"
         shift
     ;;
     --eval-dir)
@@ -162,12 +176,40 @@ case $key in
         CTRL_ANNEAL_RATE="$2"
         shift
     ;;
-    --ctrl-coverage)
-        CTRL_MODULE_COVERAGE="$2"
+    --ctrl-cosine-decay)
+        CTRL_COSINE_DECAY="$2"
         shift
     ;;
-    --ctrl-regularizer-weight)
-        CTRL_REGULARIZER_WEIGHT="$2"
+    --ctrl-cosine-reset)
+        CTRL_COSINE_RESET="$2"
+        shift
+    ;;
+    --ctrl-kl-div-ratio)
+        CTRL_KL_DIV_RATIO="$2"
+        shift
+    ;;
+    --ctrl-kl-div-weight)
+        CTRL_KL_DIV_WEIGHT="$2"
+        shift
+    ;;
+    --ctrl-budget-ratio)
+        CTRL_BUDGET_RATIO="$2"
+        shift
+    ;;
+    --ctrl-budget-weight)
+        CTRL_BUDGET_WEIGHT="$2"
+        shift
+    ;;
+    --valid-beam-size)
+        VALID_BEAM_SIZE="$2"
+        shift
+    ;;
+    --valid-max-len-a)
+        VALID_MAX_LEN_A="$2"
+        shift
+    ;;
+    --valid-max-len-b)
+        VALID_MAX_LEN_B="$2"
         shift
     ;;
     --freeze-params)
@@ -212,13 +254,14 @@ MODEL_DIR="$MODEL_DIR.lr-$LR"
 #MODEL_DIR="$MODEL_DIR.ctrl-depth-$CTRL_DEPTH"
 #MODEL_DIR="$MODEL_DIR.max-tokens-$MAX_TOKENS"
 [[ -z "$RESET_OPTIMIZER_OPT" ]] || MODEL_DIR="$MODEL_DIR.reset-optim"
-#[[ -z "$CTRL_AVG_TOKENS_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-avg-tokens"
-#[[ -z "$CTRL_SAMPLING_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-hard-samples"
+[[ -z "$CTRL_AVG_TOKENS_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-avg-tokens"
+[[ -z "$CTRL_SAMPLING_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-hard-samples"
 MODEL_DIR="$MODEL_DIR.anneal-$CTRL_ANNEAL_TYPE"
 MODEL_DIR="$MODEL_DIR.anneal-rate-$CTRL_ANNEAL_RATE"
-MODEL_DIR="$MODEL_DIR.cov-$CTRL_MODULE_COVERAGE"
+MODEL_DIR="$MODEL_DIR.ratio-$CTRL_BUDGET_RATIO"
 MODEL_DIR="$MODEL_DIR.max-temp-$CTRL_MAX_TEMP"
-MODEL_DIR="$MODEL_DIR.reg-$CTRL_REGULARIZER_WEIGHT"
+MODEL_DIR="$MODEL_DIR.reg-$CTRL_BUDGET_WEIGHT"
+MODEL_DIR="${MODEL_DIR}${EXP_SUFFIX}"
 
 
 [[ -d $MODEL_DIR ]] && rm -r $MODEL_DIR
@@ -277,7 +320,7 @@ for current_task in $TASKS; do
             --eval-acc \
             --eval-ter \
             --eval-bleu \
-            --eval-bleu-args '{\"beam\": 5, \"max_len_a\": 1.2, \"max_len_b\": 10}' \
+            --eval-bleu-args '{\"beam\": $VALID_BEAM_SIZE, \"max_len_a\": $VALID_MAX_LEN_A, \"max_len_b\": $VALID_MAX_LEN_B}' \
             --eval-bleu-detok moses \
             --eval-bleu-remove-bpe \
             --eval-bleu-print-samples \
@@ -299,9 +342,13 @@ for current_task in $TASKS; do
             --module-ctrl-max-temperature $CTRL_MAX_TEMP \
             --module-ctrl-min-temperature $CTRL_MIN_TEMP \
             --module-ctrl-anneal-type $CTRL_ANNEAL_TYPE \
-            --module-ctrl-exponential-anneal-rate $CTRL_ANNEAL_RATE \
-            --module-coverage-regularizer-ratio $CTRL_MODULE_COVERAGE \
-            --module-coverage-regularizer-weight $CTRL_REGULARIZER_WEIGHT \
+            --module-ctrl-anneal-rate $CTRL_ANNEAL_RATE \
+            --module-ctrl-cosine-reset-decay $CTRL_COSINE_DECAY \
+            --module-ctrl-cosine-reset-every-n-epochs $CTRL_COSINE_RESET \
+            --module-kl-div-regularizer-ratio $CTRL_KL_DIV_RATIO \
+            --module-kl-div-regularizer-weight $CTRL_KL_DIV_WEIGHT \
+            --module-budget-regularizer-ratio $CTRL_BUDGET_RATIO \
+            --module-budget-regularizer-weight $CTRL_BUDGET_WEIGHT \
             $PARAM_FREEZE_OPT \
             --save-interval-updates $SAVE_EVERY_N_UPDATES")
 
@@ -314,6 +361,8 @@ for current_task in $TASKS; do
     cp $MODEL_DIR/checkpoints/checkpoint_last.pt \
         $MODEL_DIR/checkpoints/checkpoint_$current_task.pt
     ckpt_opt="--restore-file $MODEL_DIR/checkpoints/checkpoint_$current_task.pt"
+
+    echo "Finished $current_task. Evaluating..."
     bash process_checklist.sh \
         -t $current_task \
         --expdir $MODEL_DIR \

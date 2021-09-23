@@ -14,7 +14,7 @@ EMB_SIZE=128
 FFN_SIZE=$(expr 4 \* $EMB_SIZE)
 ATT_HEADS=8
 DEPTH=1
-SHARED_DICT_OPT="--share-decoder-input-output-embed"
+SHARED_DICT_OPT=
 
 # Training Reset
 RESET_OPTIMIZER_OPT=
@@ -298,7 +298,6 @@ for current_task in $TASKS; do
             --module-ctrl-word-dropout $CTRL_DROP \
             --module-ctrl-avg-tokens \
             --module-ctrl-hard-samples \
-            --module-coverage-regularizer-weight 0 \
             $PARAM_FREEZE_OPT \
             $MODULE_MASK_OPT \
             --save-interval-updates $SAVE_EVERY_N_UPDATES")
