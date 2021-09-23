@@ -1073,11 +1073,11 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
             # Mask shape: (len, bsz, num. heads)
             for key in self.ctrl_keys:
                 if key in ctrl_outputs:
-                    module_mask = ';'.join([
-                        '{}:{}'.format(layer_num, get_module_mask_string(ctrl_out, i))
+                    module_probs = ';'.join([
+                        '{}:{}'.format(layer_num, get_module_probs_string(ctrl_out, i))
                         for layer_num, ctrl_out in enumerate(ctrl_outputs[key])
                     ])
-                    finalized[i // beam_size][i % beam_size]['{}_mask'.format(key)] = module_mask
+                    finalized[i // beam_size][i % beam_size]['{}_probs'.format(key)] = module_probs
 
         for i in range(bsz * beam_size):
             # Mask shape: (len, bsz, num. heads)
@@ -1241,15 +1241,17 @@ class EnsembleModelWithModuleMask(EnsembleModel):
                 module_mask=module_mask,
             )
             # We split the encoding and decoding stage so we can pass None incremental_state to the decoder
-            # to apply futuru_mask to the prev_output_tokens in the controller
-            decoder_out = model.decoder(
+            # to apply future_mask to the prev_output_tokens in the controller
+            _, extra = model.decoder(
                 prev_output_tokens,
                 encoder_out=encoder_out,
                 incremental_state=None,
                 src_lengths=src_lengths,
                 module_mask=module_mask,
             )
-            ctrl_outputs.append(decoder_out[1]['ctrl_outputs'])
+            for key, value in encoder_out.ctrl_outputs.items():
+                extra['ctrl_outputs'][key] = value
+            ctrl_outputs.append(extra['ctrl_outputs'])
 
         if len(self.models) > 1:
             return self._average_ctrl_outputs(ctrl_outputs)

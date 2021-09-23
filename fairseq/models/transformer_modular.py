@@ -195,6 +195,17 @@ class TransformerModularEncoder(TransformerEncoder):
     def build_encoder_layer(self, args):
         return TransformerModularEncoderLayer(args)
 
+    def forward_torchscript(self, net_input: Dict[str, Tensor]):
+        if torch.jit.is_scripting():
+            return self.forward(
+                src_tokens=net_input["src_tokens"],
+                src_lengths=net_input["src_lengths"],
+                module_mask=(net_input["module_mask"] if "module_mask" in net_input else None),
+                ctrl_threshold=(net_input["ctrl_threshold"] if "ctrl_threshold" in net_input else None),
+            )
+        else:
+            return self.forward_non_torchscript(net_input)
+
     def forward(
         self,
         src_tokens,
@@ -298,9 +309,11 @@ class TransformerModularEncoder(TransformerEncoder):
                     new_ctrl_outputs[key].append(ctrl_out)
                 else:
                     new_logits = ctrl_out.logits.index_select(0, new_order)
+                    new_sampled_probs = ctrl_out.sampled_probs.index_select(0, new_order)
                     new_mask = ctrl_out.mask.index_select(0, new_order)
                     new_ctrl_out = ModularCtrlOut(
                         logits=new_logits,
+                        sampled_probs=new_sampled_probs,
                         mask=new_mask
                     )
                     new_ctrl_outputs[key].append(new_ctrl_out)

@@ -14,7 +14,7 @@ EMB_SIZE=128
 FFN_SIZE=$(expr 4 \* $EMB_SIZE)
 ATT_HEADS=8
 DEPTH=1
-SHARED_DICT_OPT="--share-decoder-input-output-embed"
+SHARED_DICT_OPT=
 
 # Training Reset
 RESET_OPTIMIZER_OPT=
@@ -31,6 +31,11 @@ CLIP_NORM=0.0
 PATIENCE=0
 KEEP_N_CHECKPOINTS=1
 SAVE_EVERY_N_UPDATES=0
+
+# Validation - Beam Search Details
+VALID_BEAM_SIZE=5
+VALID_MAX_LEN_A=1.2
+VALID_MAX_LEN_B=10
 
 HELP=1
 while [[ $# -gt 0 ]]; do
@@ -104,6 +109,18 @@ case $key in
         KEEP_N_CHECKPOINTS="$2"
         shift
     ;;
+    --valid-beam-size)
+        VALID_BEAM_SIZE="$2"
+        shift
+    ;;
+    --valid-max-len-a)
+        VALID_MAX_LEN_A="$2"
+        shift
+    ;;
+    --valid-max-len-b)
+        VALID_MAX_LEN_B="$2"
+        shift
+    ;;
     --save-every-n)
         SAVE_EVERY_N_UPDATES="$2"
         shift
@@ -170,6 +187,7 @@ for current_task in $TASKS; do
             --seed $RANDOM_SEED \
             --task translation \
             --arch transformer \
+            --share-decoder-input-output-embed \
             $SHARED_DICT_OPT \
             --train-subset ${current_task}.15.train \
             --valid-subset $valid_sets \
@@ -191,7 +209,7 @@ for current_task in $TASKS; do
             --eval-acc \
             --eval-ter \
             --eval-bleu \
-            --eval-bleu-args '{\"beam\": 5, \"max_len_a\": 1.2, \"max_len_b\": 10}' \
+            --eval-bleu-args '{\"beam\": $VALID_BEAM_SIZE, \"max_len_a\": $VALID_MAX_LEN_A, \"max_len_b\": $VALID_MAX_LEN_B}' \
             --eval-bleu-detok moses \
             --eval-bleu-remove-bpe \
             --eval-bleu-print-samples \
