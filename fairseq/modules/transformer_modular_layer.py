@@ -53,6 +53,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             dropout=args.dropout,
             word_dropout=args.module_ctrl_word_dropout,
             hard_samples=args.module_ctrl_hard_samples,
+            add_output_bias=args.module_ctrl_add_output_bias,
             averaged_tokens=args.module_ctrl_avg_tokens)
 
     def forward(
@@ -193,6 +194,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             dropout=args.dropout,
             word_dropout=args.module_ctrl_word_dropout,
             hard_samples=args.module_ctrl_hard_samples,
+            add_output_bias=args.module_ctrl_add_output_bias,
             averaged_tokens=args.module_ctrl_avg_tokens)
 
     def build_encoder_attn_controller(self, args):
@@ -204,6 +206,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             dropout=args.dropout,
             word_dropout=args.module_ctrl_word_dropout,
             hard_samples=args.module_ctrl_hard_samples,
+            add_output_bias=args.module_ctrl_add_output_bias,
             averaged_tokens=args.module_ctrl_avg_tokens)
 
     def prepare_for_onnx_export_(self):
