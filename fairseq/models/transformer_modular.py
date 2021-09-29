@@ -60,6 +60,8 @@ class TransformerModularModel(TransformerModel):
                             help='average controler input sequence')
         parser.add_argument('--module-ctrl-hard-samples', action='store_true',
                             help='use hard (0, 1) modular mask samples during training')
+        parser.add_argument('--module-ctrl-add-output-bias', action='store_true',
+                            help='add bias to the output layer of each module controller network')
         parser.add_argument('--module-ctrl-hidden-depth', type=int,
                             help='num of controller hidden layers')
         parser.add_argument('--module-ctrl-hidden-dim', type=int,
@@ -506,6 +508,7 @@ def transformer_modular(args):
     args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'attention')
     args.module_ctrl_avg_tokens = getattr(args, 'module_ctrl_avg_tokens', False)
     args.module_ctrl_hard_samples = getattr(args, 'module_ctrl_hard_samples', False)
+    args.module_ctrl_add_output_bias = getattr(args, 'module_ctrl_add_output_bias', False)
 
     args.module_ctrl_hidden_depth = getattr(
         args, 'module_ctrl_hidden_depth', 0)
