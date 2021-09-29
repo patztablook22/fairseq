@@ -45,6 +45,7 @@ CTRL_DIM=$EMB_SIZE
 CTRL_DROP=0.0
 CTRL_SAMPLING_OPT=""
 CTRL_AVG_TOKENS_OPT=""
+CTRL_OUTPUT_BIAS_OPT=""
 
 # Gumbel Temperature
 CTRL_MIN_TEMP=0.0625
@@ -159,6 +160,9 @@ case $key in
     ;;
     --ctrl-avg-tokens)
         CTRL_AVG_TOKENS_OPT="--module-ctrl-avg-tokens"
+    ;;
+    --ctrl-add-bias)
+        CTRL_OUTPUT_BIAS_OPT="--module-ctrl-add-output-bias"
     ;;
     --ctrl-min-temp)
         CTRL_MIN_TEMP="$2"
@@ -339,6 +343,7 @@ for current_task in $TASKS; do
             --module-ctrl-word-dropout $CTRL_DROP \
             $CTRL_SAMPLING_OPT \
             $CTRL_AVG_TOKENS_OPT \
+            $CTRL_OUTPUT_BIAS_OPT \
             --module-ctrl-max-temperature $CTRL_MAX_TEMP \
             --module-ctrl-min-temperature $CTRL_MIN_TEMP \
             --module-ctrl-anneal-type $CTRL_ANNEAL_TYPE \

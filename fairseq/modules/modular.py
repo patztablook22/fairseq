@@ -91,13 +91,15 @@ class ModularCtrl(nn.Module):
                  dropout=0.0,
                  word_dropout=0.0,
                  hard_samples=False,
-                 averaged_tokens=False):
+                 averaged_tokens=False,
+                 add_output_bias=False):
         super().__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.hidden_depth = hidden_depth
         self.hard_samples = hard_samples
         self.averaged_tokens = averaged_tokens
+        self.add_output_bias = add_output_bias
 
         self.n_modules = n_modules
 
@@ -115,7 +117,7 @@ class ModularCtrl(nn.Module):
 
         self.dropout = dropout
         self.word_dropout = word_dropout
-        self.out_proj = nn.Linear(input_dim, n_modules)
+        self.out_proj = nn.Linear(input_dim, n_modules, bias=self.add_output_bias)
 
     def extract_features(self, x, padding_mask=None, future_mask=None):
         """Compute the pre-softmax representation."""
