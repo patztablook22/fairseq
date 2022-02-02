@@ -209,6 +209,10 @@ def main(args):
                 if args.print_attn_confidence:
                     print('C-{}\t{}'.format(id, hypo['enc_self_attn_conf']))
 
+                if 'eos_lprobs' in hypo:
+                    print('eos-lprobs-{}\t{}'.format(id, hypo['eos_lprobs']))
+
+
         # update running id counter
         start_id += len(inputs)
 

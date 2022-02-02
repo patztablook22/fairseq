@@ -5,19 +5,20 @@ JOB_PRIORITY=-65
 
 EXP_DIR=
 TRANSLATION_OPT=""
+BEAM_SIZE=1
+LENPEN=0.6
 
 SRC=en
 TGT=cs
 
-USE_ORACLE=1
-SELECTION=
-
 CURRENT_TASK=
 TASKS="newstest"
-LENGTHS="10 20 30 40 50 60 70 80 90 100"
+LENGTHS=`seq 10 10 150`
 
 EVAL_DATASET="test"
 EVAL_DIR="custom_examples/translation/wmt20_encs"
+
+OVERWRITE=1
 
 HELP=1
 while [[ $# -gt 0 ]]
@@ -45,6 +46,14 @@ case $key in
         TGT="$2"
         shift
     ;;
+    -bs|--beam-size)
+        BEAM_SIZE="$2"
+        shift
+    ;;
+    --lenpen)
+        LENPEN="$2"
+        shift
+    ;;
     -t|--current-task)
         CURRENT_TASK="$2"
         shift
@@ -57,15 +66,8 @@ case $key in
         TRANSLATION_OPT="$2"
         shift
     ;;
-    -h|--help)
-        HELP=0
-    ;;
-    --use-oracle)
-        USE_ORACLE=0
-    ;;
-    --selection)
-        SELECTION="$2"
-        shift
+    --overwrite)
+        OVERWRITE=0
     ;;
     -h|--help)
         HELP=0
@@ -85,9 +87,11 @@ MEM="10g"
 GPUMEM="11g"
 GPUS=1
 
+TOKENIZER=mosesdecoder/scripts/tokenizer/tokenizer.perl
 DETOKENIZER=mosesdecoder/scripts/tokenizer/detokenizer.perl
+SERIES_AVG=my_scripts/average_dynamic_series.py
 
-TRANSLATION_OPT="-s $SRC -t $TGT --bpe subword_nmt --bpe-codes $EVAL_DIR/bpecodes"
+TRANSLATION_OPT="-s $SRC -t $TGT --beam $BEAM_SIZE --lenpen $LENPEN --bpe subword_nmt --bpe-codes $EVAL_DIR/bpecodes $TRANSLATION_OPT"
 
 # TODO print help
 
@@ -100,38 +104,36 @@ function evaluate {
     _file=$1
     _sys=$2
 
-    grep '^H' $_sys/$CURRENT_TASK.eval/$_file.txt | \
-        sed 's/^H\-//' | \
-        sort -n -k 1 | \
-        cut -f3 | \
-        perl $DETOKENIZER -l $TGT | \
-        sed "s/ - /-/g" > $_sys/$CURRENT_TASK.eval/$_file.hyps.detok.txt
+    # extract hypotheses and compute BLEU against references
+    grep '^H' $RESULTS_DIR/$_file.txt \
+        | sed 's/^H\-//' \
+        | sort -n -k 1 \
+        | cut -f3 \
+        | perl $DETOKENIZER -l $TGT \
+        | sed "s/ - /-/g" \
+        > $RESULTS_DIR/$_file.hyps.detok.txt
     msg "Evaluating $_file.hyps.detok.txt..."
-    sacrebleu --input $_sys/$CURRENT_TASK.eval/$_file.hyps.detok.txt $EVAL_DIR/${_file}.$TGT > $_sys/$CURRENT_TASK.eval/${_file}.eval_out
+    sacrebleu --input $RESULTS_DIR/$_file.hyps.detok.txt $EVAL_DIR/${_file}.$TGT > $RESULTS_DIR/${_file}.eval_out
+
+    # extract and agregate EOS emission probs
+    grep 'eos-lprobs' $RESULTS_DIR/$_file.txt \
+        | cut -f2 \
+        | $SERIES_AVG \
+        > $RESULTS_DIR/${_file}.eos_lprobs
 }
 
 function translate {
-    # The function takes two global variables (modifiers) for varying modes of translation:
-    # (USE_ORACLE and SELECTION)
     _file=$1
     _sys=$2
 
+    outfile=$RESULTS_DIR/${_file}
+
     cmd="source $VIRTUALENV"
-    if [[ $USE_ORACLE -eq 0 ]]; then
-        oracle_input="$EVAL_DIR/${_file}.$SRC $EVAL_DIR/${_file}.$TGT"
-        outfile=$CURRENT_TASK.eval/${_file}.oracle
-        cmd="$cmd && wrappers/translate_modular_oracle_interactive.sh $_sys <(paste $oracle_input) '_$CURRENT_TASK' $outfile '$TRANSLATION_OPT --print-selection --print-attn-confidence'"
-    elif [[ -n "$SELECTION" ]]; then
-        oracle_input="$EVAL_DIR/${_file}.$SRC $EVAL_DIR/${_file}.$TGT"
-        outfile=$CURRENT_TASK.eval/${_file}.sel_$SELECTION
-        cmd="$cmd && wrappers/translate_modular_oracle_interactive.sh $_sys <(paste $oracle_input) '_$CURRENT_TASK' $outfile '$TRANSLATION_OPT --print-selection --print-attn-confidence --fixed-encoder-selection ($SELECTION) --fixed-decoder-selection ($SELECTION)'"
-    else
-        outfile=$CURRENT_TASK.eval/${_file}
-        cmd="$cmd && cat $EVAL_DIR/${_file}.$SRC"
-        cmd="$cmd | wrappers/translate_wrapper_interactive.sh $_sys '_$CURRENT_TASK' $outfile '$TRANSLATION_OPT'"
-    fi
-    cmd="$cmd && mv $_sys/$outfile.$CURRENT_TASK.txt $_sys/$outfile.txt"
-    [[ -e "$_sys/$outfile.txt" ]] && exit 0
+    cmd="$cmd && cat $EVAL_DIR/${_file}.$SRC | perl $TOKENIZER -a -l $SRC"
+    cmd="$cmd | wrappers/translate_wrapper_interactive.sh $_sys '_$CURRENT_TASK' $outfile '$TRANSLATION_OPT'"
+    cmd="$cmd && mv $outfile.$CURRENT_TASK.txt $outfile.txt"
+
+    [[ -e "$outfile.txt" ]] && exit 0
 
     jid=`qsubmit --jobname=tr_len_eval --logdir=logs --gpus=$GPUS --gpumem=$GPUMEM --mem=$MEM --cores=$CORES --priority=$JOB_PRIORITY "$cmd"`
     jid=`echo $jid | cut -d" " -f3`
@@ -157,7 +159,8 @@ function process_files {
     done
 }
 
-[[ -d "$EXP_DIR/$CURRENT_TASK.eval" ]] || mkdir $EXP_DIR/$CURRENT_TASK.eval
-process_files $EVAL_DATASET $EVAL_DIR
+RESULTS_DIR=$EXP_DIR/$CURRENT_TASK.bs-$BEAM_SIZE.lp-$LENPEN.eval
+[[ $OVERWRITE -eq 0 ]] && [[ -d $RESULTS_DIR ]] && rm -r $RESULTS_DIR
+[[ -d "$RESULTS_DIR" ]] || mkdir $RESULTS_DIR
 
-# TODO: include clustering eval
+process_files $EVAL_DATASET $EVAL_DIR
