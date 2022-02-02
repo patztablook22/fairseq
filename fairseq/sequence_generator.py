@@ -245,6 +245,7 @@ class SequenceGenerator(nn.Module):
 
         reorder_state: Optional[Tensor] = None
         batch_idxs: Optional[Tensor] = None
+        eos_lprobs: List[Tensor] = torch.ones(bsz * beam_size, 1) * -math.inf
         for step in range(max_len + 1):  # one extra step for EOS marker
             # reorder decoder internal states based on the prev choice of beams
             # print(f'step: {step}')
@@ -274,6 +275,9 @@ class SequenceGenerator(nn.Module):
             if step >= max_len:
                 lprobs[:, : self.eos] = -math.inf
                 lprobs[:, self.eos + 1 :] = -math.inf
+            eos_lprobs = eos_lprobs.to(lprobs)
+            eos_lprobs = torch.cat(
+                [eos_lprobs, lprobs[:, self.eos].view(-1, 1)], dim=-1)
 
             # handle prefix tokens (possibly with different lengths)
             if (
@@ -346,6 +350,7 @@ class SequenceGenerator(nn.Module):
                     attn,
                     src_lengths,
                     max_len,
+                    eos_lprobs
                 )
                 num_remaining_sent -= len(finalized_sents)
 
@@ -370,6 +375,7 @@ class SequenceGenerator(nn.Module):
                 cand_bbsz_idx = cand_beams.add(bbsz_offsets)
                 cand_scores = cand_scores[batch_idxs]
                 cand_indices = cand_indices[batch_idxs]
+                eos_lprobs = eos_lprobs[batch_idxs]
 
                 if prefix_tokens is not None:
                     prefix_tokens = prefix_tokens[batch_idxs]
@@ -460,6 +466,10 @@ class SequenceGenerator(nn.Module):
                 for j, _ in enumerate(finalized[i]):
                     finalized[i][j]['enc_self_attn_conf'] = enc_self_attn_conf
 
+        for i in range(bsz):
+            for j, _ in enumerate(finalized[i]):
+                finalized[i][j]['eos_lprobs'] = ",".join(finalized[i][j]['eos_lprobs'].cpu().numpy().astype(np.str))
+
         return finalized
 
     def _prefix_tokens(
@@ -509,6 +519,7 @@ class SequenceGenerator(nn.Module):
         attn: Optional[Tensor],
         src_lengths,
         max_len: int,
+        eos_lprobs,
     ):
         """Finalize hypothesis, store finalized information in `finalized`, and change `finished` accordingly.
         Returns number of sentences being finalized.
@@ -528,6 +539,10 @@ class SequenceGenerator(nn.Module):
             if attn is not None
             else None
         )
+
+        # handle eos_lprobs lists
+        eos_lprobs_clone = eos_lprobs.index_select(0, bbsz_idx)[
+            :, 1 : step + 2]
 
         # compute scores per token position
         pos_scores = scores.index_select(0, bbsz_idx)[:, : step + 1]
@@ -576,6 +591,7 @@ class SequenceGenerator(nn.Module):
                         "attention": hypo_attn,  # src_len x tgt_len
                         "alignment": torch.empty(0),
                         "positional_scores": pos_scores[i],
+                        "eos_lprobs": eos_lprobs_clone[i],
                     }
                 )
 
