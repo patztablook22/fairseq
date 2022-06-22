@@ -76,7 +76,7 @@ def make_batches(lines, args, task, max_positions, encode_fn):
         max_sentences=args.max_sentences,
         max_positions=max_positions,
         ignore_invalid_inputs=args.skip_invalid_size_inputs_valid_test
-    ).next_epoch_itr(shuffle=True)
+    ).next_epoch_itr(shuffle=False)
     for batch in itr:
         yield batch
 
@@ -132,22 +132,30 @@ def main(args):
     if args.buffer_size > 1:
         logger.info('Sentence buffer size: %s', args.buffer_size)
     
-    n_batches = 0
+    n_samples = 0
+    model.eval()  # Using eval() mode to disable dropout
     model.zero_grad()
     for inputs in buffered_read(args.input, args.buffer_size):
         for sample in make_batches(inputs, args, task, max_positions, encode_fn):
-            n_batches += 1
             sample = utils.move_to_cuda(sample) if use_cuda else sample
 
             # Perform train step to get loss to compute gradients
-            model.train()
             loss, _, _ = criterion(model, sample)
+            if args.ewc_normalize == "tokens":
+                sample_size = sample['ntokens']
+            elif args.ewc_normalize == "sentences":
+                sample_size = sample['target'].size(0)
+            elif args.ewc_normalize == "batches":
+                sample_size = 1
+            else:
+                raise ValueError("unkown option")
+            n_samples += sample_size
 
             # Accumulate gradients
             loss.backward()
 
     # Average gradients and compute fisher diagonal
-    fisher_diagonals = [(p.grad / n_batches) ** 2 for n, p in model.named_parameters()]
+    fisher_diagonals = [(p.grad / n_samples) ** 2 for n, p in model.named_parameters()]
 
     param_names = [
         n.replace('.', '__') for n, p in model.named_parameters()

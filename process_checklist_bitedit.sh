@@ -1,5 +1,4 @@
 #!/bin/bash
-# The input files/references have to be detokenized in advance
 set -e
 
 JOB_PRIORITY=-85
@@ -9,15 +8,15 @@ TRANSLATION_OPT=""
 BEAM_SIZE=1
 LENPEN=0.6
 
-SRC=en
-TGT=cs
+SRC=x
+TGT=y
 
 CURRENT_TASK=
-TASKS="newstest"
-LENGTHS=
+TASKS="id push pop shift unshift reverse"
+LENGTHS="15 20 25"
 
 EVAL_DATASET="test"
-EVAL_DIR="custom_examples/translation/wmt20_encs"
+EVAL_DIR="custom_examples/translation/bitedit.30000"
 
 OVERWRITE=1
 
@@ -92,11 +91,9 @@ MEM="10g"
 GPUMEM="11g"
 GPUS=1
 
-TOKENIZER=mosesdecoder/scripts/tokenizer/tokenizer.perl
-DETOKENIZER=mosesdecoder/scripts/tokenizer/detokenizer.perl
 SERIES_AVG=my_scripts/average_dynamic_series.py
 
-TRANSLATION_OPT="-s $SRC -t $TGT --beam $BEAM_SIZE --lenpen $LENPEN --bpe subword_nmt --bpe-codes $EVAL_DIR/bpecodes $TRANSLATION_OPT"
+TRANSLATION_OPT="-s $SRC -t $TGT --beam $BEAM_SIZE --lenpen $LENPEN $TRANSLATION_OPT"
 
 # TODO print help
 
@@ -114,11 +111,9 @@ function evaluate {
         | sed 's/^H\-//' \
         | sort -n -k 1 \
         | cut -f3 \
-        | perl $DETOKENIZER -l $TGT \
-        | sed "s/ - /-/g" \
-        > $RESULTS_DIR/$_file.hyps.detok.txt
-    msg "Evaluating $_file.hyps.detok.txt..."
-    sacrebleu --input $RESULTS_DIR/$_file.hyps.detok.txt $EVAL_DIR/${_file}.$TGT > $RESULTS_DIR/${_file}.eval_out
+        > $RESULTS_DIR/$_file.hyps.txt
+    msg "Evaluating $_file.hyps.txt..."
+    paste $RESULTS_DIR/$_file.hyps.txt $EVAL_DIR/${_file}.y | my_scripts/compare_sequences.py > $RESULTS_DIR/$_file.eval_out
 
     # extract and agregate EOS emission probs
     #grep 'eos-lprobs' $RESULTS_DIR/$_file.txt \
@@ -134,7 +129,7 @@ function translate {
     outfile=$RESULTS_DIR/${_file}
 
     cmd="source $VIRTUALENV"
-    cmd="$cmd && cat $EVAL_DIR/${_file}.$SRC | perl $TOKENIZER -a -l $SRC"
+    cmd="$cmd && cat $EVAL_DIR/${_file}.$SRC"
     cmd="$cmd | wrappers/translate_wrapper_interactive.sh $_sys '_$CURRENT_TASK' $outfile '$TRANSLATION_OPT'"
     cmd="$cmd && mv $outfile.$CURRENT_TASK.txt $outfile.txt"
 
@@ -149,17 +144,15 @@ function process_files {
     _dataset=$1
     _dir=$2
 
+    my_scripts/print_model_variables.py \
+        --checkpoint $EXP_DIR/checkpoints/checkpoint_$CURRENT_TASK.pt \
+    | grep fisher | cut -f2 | ~/scripts/min_max_avg.py > $RESULTS_DIR/fisher.min
+
+    my_scripts/print_model_variables.py \
+        --checkpoint $EXP_DIR/checkpoints/checkpoint_$CURRENT_TASK.pt \
+    | grep fisher | cut -f3 | ~/scripts/min_max_avg.py > $RESULTS_DIR/fisher.max
+
     for task in $TASKS; do
-        msg "Processing $task.$_dataset ..."
-
-        jid=`translate $task.$_dataset $EXP_DIR`
-        msg "Waiting for job $jid..."
-        while true; do
-            sleep 20
-            qstat | grep $jid > /dev/null || break
-        done
-        evaluate $task.$_dataset $EXP_DIR
-
         for len in $LENGTHS; do
             msg "Processing $task.$len.$_dataset ..."
 
@@ -169,6 +162,7 @@ function process_files {
                 sleep 20
                 qstat | grep $jid > /dev/null || break
             done
+
             evaluate $task.$len.$_dataset $EXP_DIR
         done
     done

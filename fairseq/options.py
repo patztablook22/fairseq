@@ -251,6 +251,9 @@ def get_parser(desc, default_task="translation"):
                         help='suffix to add to the checkpoint file name')
     parser.add_argument('--quantization-config-path', default=None,
                         help='path to quantization config file')
+    parser.add_argument('--parameter-freeze-substr', type=str,
+                        help='parameters containing one of the comma (",") separated substrings '
+                             'will not be updated during training')
 
     from fairseq.registry import REGISTRIES
     for registry_name, REGISTRY in REGISTRIES.items():
@@ -596,6 +599,7 @@ def add_generation_args(parser):
                        help='if set, print confidence of each attention head')
     group.add_argument('--fixed-encoder-selection', default=None)
     group.add_argument('--fixed-decoder-selection', default=None)
+    group.add_argument('--ewc-normalize', type=str, default='tokens')
 
     group.add_argument('--print-step', action='store_true')
 

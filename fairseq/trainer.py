@@ -169,12 +169,32 @@ class Trainer(object):
         return self._lr_scheduler
 
     def _build_optimizer(self):
-        params = list(
+        named_params = list(
             filter(
-                lambda p: p.requires_grad,
-                chain(self.model.parameters(), self.criterion.parameters()),
+                lambda p: p[1].requires_grad,
+                chain(self.model.named_parameters(), self.criterion.named_parameters()),
             )
         )
+        if self.args.parameter_freeze_substr is not None:
+            substrings = self.args.parameter_freeze_substr.strip('~').split(',')
+            if self.args.parameter_freeze_substr[0] == '~':
+                frozen_params = list(
+                    filter(
+                        lambda p: all([s not in p[0] for s in substrings]),
+                        named_params
+                    )
+                )
+            else:
+                frozen_params = list(
+                    filter(
+                        lambda p: any([s in p[0] for s in substrings]),
+                        named_params
+                    )
+                )
+            for _, t in frozen_params:
+                t.requires_grad = False
+            logger.info('Following parameter weights will be frozen during training: {}'.format([p[0] for p in frozen_params]))
+        params = [p[1] for p in named_params]
 
         if self.args.fp16 or self.args.bf16:
             if self.cuda and torch.cuda.get_device_capability(0)[0] < 7:
@@ -232,10 +252,14 @@ class Trainer(object):
         if bexists:
             state = checkpoint_utils.load_checkpoint_to_cpu(filename)
 
+            # Remove EWC-related values from state_dict to avoid RuntimeError during loading
+            state_model = {n: p for n, p in state["model"].items() if "__" not in n}
+
+
             # load model parameters
             try:
                 self.get_model().load_state_dict(
-                    state["model"], strict=True, args=self.args
+                    state_model, strict=True, args=self.args
                 )
                 if utils.has_parameters(self.get_criterion()):
                     self.get_criterion().load_state_dict(
@@ -246,6 +270,17 @@ class Trainer(object):
                     "Cannot load model parameters from checkpoint {}; "
                     "please ensure that the architectures match.".format(filename)
                 )
+            # Manually register the EWC-related values into the loaded model
+            for n, p in self.get_model().named_parameters():
+                n = n.replace('.', '__')
+                # We assume that a model should have both _mean and _fisher attributes or none
+                if '{}_mean'.format(n) in state["model"]:
+                    self.get_model().register_buffer(
+                        '{}_mean'.format(n),
+                        state["model"]['{}_mean'.format(n)].data.to(device=self.device))
+                    self.get_model().register_buffer(
+                        '{}_fisher'.format(n),
+                        state["model"]['{}_fisher'.format(n)].data.to(device=self.device))
 
             extra_state = state["extra_state"]
             self._optim_history = state["optimizer_history"]
