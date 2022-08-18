@@ -19,18 +19,18 @@ def main(args):
         diff = torch.abs(state_1[n] - state_2[n])
 
         mean = diff.mean()
-        var = diff.var()
+        std = diff.std()
         median = diff.median()
         n = n.replace('.', '__')
         n += "_fisher"
         if n not in ewc_1:
             continue
         ewc_mean = ewc_1[n].mean()
-        ewc_var = ewc_1[n].var()
+        ewc_std = ewc_1[n].std()
         ewc_median = ewc_1[n].median()
 
         corrcoef = np.corrcoef(diff.view(-1), ewc_1[n].view(-1))[0,1]
-        print("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}".format(n, corrcoef, mean, var, median, ewc_mean, ewc_var, ewc_median))
+        print("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}".format(n, corrcoef, mean, std, median, ewc_mean, ewc_std, ewc_median))
 
 
 def parse_args():

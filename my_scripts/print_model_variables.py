@@ -9,9 +9,10 @@ def main(args):
         minimum = ckpt['model'][k].min()
         maximum = ckpt['model'][k].max()
         mean = ckpt['model'][k].mean()
-        var = ckpt['model'][k].var()
+        #var = ckpt['model'][k].var()
+        std = ckpt['model'][k].std()
         median = ckpt['model'][k].median()
-        print("{}\t{}\t{}\t{}\t{}\t{}".format(k, minimum, maximum, mean, var, median))
+        print("{}\t{}\t{}\t{}\t{}\t{}".format(k, minimum, maximum, mean, std, median))
 
 
 def parse_args():

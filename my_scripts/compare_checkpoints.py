@@ -17,14 +17,14 @@ def main(args):
     for n, p in state_1.items():
         diff = torch.abs(state_1[n] - state_2[n])
         mean = diff.mean()
-        var = diff.var()
-        print("{}\t{}\t{}".format(n, mean, var))
+        std = diff.std()
+        print("{}\t{}\t{}".format(n, mean, std))
 
     for n, p in ewc_1.items():
         diff = torch.abs(ewc_1[n] - ewc_2[n])
         mean = diff.mean()
-        var = diff.var()
-        print("{}\t{}\t{}".format(n, mean, var))
+        std = diff.std()
+        print("{}\t{}\t{}".format(n, mean, std))
 
 
 def parse_args():

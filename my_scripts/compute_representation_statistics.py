@@ -33,7 +33,7 @@ def main(args):
                     mean_nearest_neighbor_overlap(
                         outputs[i][key], outputs[j][key], args.num_neighbors))
         print("m{}NN-{} {:.3f} {:.3f}".format(
-            args.num_neighbors, key, np.mean(res), np.var(res)))
+            args.num_neighbors, key, np.mean(res), np.std(res)))
 
         # Compute intra/inter cluster similarities...
         # ...and pearson correlation between ctrl featurs and output matrices
@@ -59,11 +59,11 @@ def main(args):
             res["pearson"].append(pearson(outputs[i][key], projections, mask_inter))
 
         print("c-intra-{} {:.3f} {:.3f}".format(
-            key, np.mean(res["c_intra"]), np.var(res["c_intra"])))
+            key, np.mean(res["c_intra"]), np.std(res["c_intra"])))
         print("c-inter-{} {:.3f} {:.3f}".format(
-            key, np.mean(res["c_inter"]), np.var(res["c_inter"])))
+            key, np.mean(res["c_inter"]), np.std(res["c_inter"])))
         print("pearson-{} {:.3f} {:.3f}".format(
-            key, np.mean(res["pearson"]), np.var(res["pearson"])))
+            key, np.mean(res["pearson"]), np.std(res["pearson"])))
 
 
 def parse_args():
