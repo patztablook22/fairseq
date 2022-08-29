@@ -55,14 +55,13 @@ ModularCtrlOut = NamedTuple(
 @with_incremental_state
 class ModularCtrl(nn.Module):
     """
-    A module controller for conditional computation.
+    Module controller for conditional computation.
 
     This module takes an input sequence before it is passed to a masked
     Transformer module (e.g. masked multi-head attention) and produces
     a module mask for the said module.
 
-    This controller is an implementation of deep averaging network (DAN)
-    described in
+    This controller is an implementation of deep averaging network (DAN) described in
     Iyyer et al. (2015), "Deep unordered composition rivals syntactic methods for text classification."
 
     Args:
@@ -109,9 +108,8 @@ class ModularCtrl(nn.Module):
 
     def extract_features(self, x, padding_mask=None, future_mask=None):
         """Compute the pre-softmax representation."""
-
         # shape(x) = (bsz, seq_len, input_dim)
-        src_len = x.size(1)
+        x_len = x.size(1)
 
         if padding_mask is not None:
             # The mask contains '1' in place of the padding symbols
@@ -128,11 +126,10 @@ class ModularCtrl(nn.Module):
 
         if self.averaged_tokens:
             if future_mask is not None:
-                future_mask =  future_mask.reshape(1, src_len, src_len, 1)
-                x = x.unsqueeze(1).repeat([1, src_len, 1, 1])
-                x = masked_mean(x, mask=future_mask, axis=2)
-
+                future_mask = future_mask.reshape(1, x_len, x_len, 1)
                 x *= input_mask.float()
+                x = x.unsqueeze(1).repeat([1, x_len, 1, 1])
+                x = masked_mean(x, mask=future_mask, axis=2)
             else:
                 x = masked_mean(x, mask=input_mask, axis=1, keepdim=True)
         else:
@@ -146,8 +143,7 @@ class ModularCtrl(nn.Module):
         padding_mask: Optional[Tensor] = None,
         future_mask: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
-        threshold: Tensor = 0.5,
-        temperature: Tensor = 1.0
+        temperature=1.0
     ) -> ModularCtrlOut:
         """
         Compute a module mask based on the input sequence x.
@@ -155,7 +151,6 @@ class ModularCtrl(nn.Module):
         Args:
             padding_mask: sequence padding mask
             future_mask: mask for the following tokens
-            threshold: inference-time threshold for the positive mask prediction
             temperature: temperature for Gumbel-Softmax
 
         Returns:
@@ -164,7 +159,6 @@ class ModularCtrl(nn.Module):
                 module mask (same shape)
         """
         x = x.transpose(0, 1)
-        src_len = x.size(1)
 
         if future_mask is not None:
             # future_mask contains values to mask decoder self-attn "before_softmax"
@@ -192,7 +186,7 @@ class ModularCtrl(nn.Module):
                 padding_mask=padding_mask,
                 prev_padding_mask=prev_padding_mask,
                 batch_size=x.size(0),
-                src_len=x.size(1)
+                seq_len=x.size(1),
             )
 
             saved_state["prev_x"] = x
@@ -205,7 +199,7 @@ class ModularCtrl(nn.Module):
         logits = self.out_proj(features)
 
         if saved_state is not None:
-            logits = logits[:, -src_len:]
+            logits = logits[:, -x.size(1):]
 
         if self.training:
             module_mask = gumbel_sigmoid(
@@ -223,9 +217,9 @@ class ModularCtrl(nn.Module):
         padding_mask: Optional[Tensor],
         prev_padding_mask: Optional[Tensor],
         batch_size: int,
-        src_len: int,
+        seq_len: int,
     ) -> Optional[Tensor]:
-        # saved key padding masks have shape (seq_len, bsz)
+        # saved key padding masks have shape (bsz, seq_len)
         if prev_padding_mask is not None and padding_mask is not None:
             new_padding_mask = torch.cat(
                 [prev_padding_mask.float(), padding_mask.float()], dim=1
@@ -235,7 +229,7 @@ class ModularCtrl(nn.Module):
         # is None
         elif prev_padding_mask is not None:
             filler = torch.zeros(
-                (batch_size, src_len - prev_padding_mask.size(1)),
+                (batch_size, seq_len - prev_padding_mask.size(1)),
                 device=prev_padding_mask.device,
             )
             new_padding_mask = torch.cat(
@@ -243,7 +237,7 @@ class ModularCtrl(nn.Module):
             )
         elif padding_mask is not None:
             filler = torch.zeros(
-                (batch_size, src_len - padding_mask.size(1)),
+                (batch_size, seq_len - padding_mask.size(1)),
                 device=padding_mask.device,
             )
             new_padding_mask = torch.cat(
