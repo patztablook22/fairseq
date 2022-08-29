@@ -17,14 +17,33 @@ from fairseq.criterions.label_smoothed_cross_entropy import LabelSmoothedCrossEn
 _EPS = 1e-9
 
 
+# TODO: review this and indicate this in TB
+def selection_entropy(controllers):
+    return torch.stack([
+        Bernoulli(logits=ctrl.logits).entropy() for ctrl in controllers
+        if ctrl is not None], axis=0).mean()
+
+
+# TODO: review this and indicate this in TB
+def batch_selection_entropy(controllers):
+    def layer_entropy(layer_ctrl):
+        probs = Bernoulli(logits=layer_ctrl.logits).probs.mean(0)
+        probs = torch.stack([probs, 1 - probs], 0)
+        return (-probs * torch.log(probs + _EPS)).sum(0)
+
+    return torch.stack([
+        layer_entropy(ctrl) for ctrl in controllers
+        if ctrl is not None]).mean()
+
+
 def compute_masked_ratio(controllers):
-    n_masked = sum([ctrl.mask.sum([-2, -1]) for ctrl in controllers if ctrl is not None])
-    n_all = sum([ctrl.mask[0].numel() for ctrl in controllers if ctrl is not None])
-    if n_all and n_all > 0.:
-        res = n_masked / n_all
+    n_masked = [ctrl.mask.sum([-2, -1]) for ctrl in controllers if ctrl is not None]
+    n_all = [ctrl.mask[0].numel() for ctrl in controllers if ctrl is not None]
+    if n_all:
+        res = torch.stack(n_masked, 0).sum(0) / torch.stack(n_all, 0).sum(0)
         assert 0. <= res.mean() <= 1.
         return res
-    return None
+    return torch.tensor(0.)
 
 
 def compute_kl_div(controllers, q):
@@ -36,8 +55,8 @@ def compute_kl_div(controllers, q):
         return torch.tensor(0.)
     probs = torch.cat(probs, dim=1)
 
-    res = -(q * torch.log(probs + _EPS) + (1 - q) * torch.log(1 - probs + _EPS)).sum([-2, -1])
-    return res
+    res = -(q * torch.log(probs + _EPS) + (1 - q) * torch.log(1 - probs + _EPS))
+    return res.sum([-2, -1])
 
 
 def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True):
@@ -79,7 +98,7 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
                  module_ctrl_max_temperature,
                  module_ctrl_min_temperature,
                  module_ctrl_anneal_type,
-                 module_ctrl_exponential_anneal_rate,
+                 module_ctrl_anneal_rate,
                  module_ctrl_cosine_reset_decay,
                  module_ctrl_cosine_reset_every_n_epochs,
                  module_coverage_regularizer_ratio,
@@ -90,7 +109,7 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
         self.module_ctrl_min_temperature = module_ctrl_min_temperature
 
         self.module_ctrl_anneal_type = module_ctrl_anneal_type
-        self.module_ctrl_exponential_anneal_rate = module_ctrl_exponential_anneal_rate
+        self.module_ctrl_anneal_rate = module_ctrl_anneal_rate
         self.module_ctrl_cosine_reset_decay = module_ctrl_cosine_reset_decay
         self.module_ctrl_cosine_reset_every_n_epochs = module_ctrl_cosine_reset_every_n_epochs
 
@@ -112,7 +131,7 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
                                  'from Ramesh et al. (2021), "Zero-Shot Text-to-Image Generation"')
         parser.add_argument('--module-ctrl-anneal-type', type=str, default='exponential',
                             help='temperature annealing type [exponential, cosine]')
-        parser.add_argument('--module-ctrl-exponential-anneal-rate', type=float, default=1e-6,
+        parser.add_argument('--module-ctrl-anneal-rate', type=float, default=1e-6,
                             help='temperature anneal rate (exponential annealing) for controller\'s gumbel_sigmoid')
         parser.add_argument('--module-ctrl-cosine-reset-decay', type=float, default=0.95,
                             help='')
@@ -156,6 +175,7 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
         net_output = model(**sample['net_input'], ctrl_temperature=self.temp)
         loss, nll_loss, kl_div, mask_ratio = self.compute_loss(
             model, net_output, sample, reduce=reduce)
+
         sample_size = sample['target'].size(0) if self.sentence_avg else sample['ntokens']
         logging_output = {
             'loss': loss.data,
@@ -180,6 +200,9 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
             ctrl_out for key in ctrl_outputs for ctrl_out in ctrl_outputs[key]
             if ctrl_out is not None
         ]
+
+        sel_entropy = selection_entropy(ctrl_outputs)
+        batch_entropy = batch_selection_entropy(ctrl_outputs)
 
         target = model.get_targets(sample, net_output).view(-1, 1)
         loss, nll_loss = label_smoothed_nll_loss(

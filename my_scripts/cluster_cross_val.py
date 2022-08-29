@@ -46,8 +46,8 @@ def compute_overlap(labels, vocabs):
     )
     res = res * mask
     mean = np.sum(res) / np.sum(mask)
-    var = np.sum(((res - mean) ** 2) * mask) / np.sum(mask)
-    return mean, var
+    std = np.sum(((res - mean) ** 2) * mask) / np.sum(mask)
+    return mean, std
 
 
 def main(args):
@@ -69,7 +69,7 @@ def main(args):
     res_ari = []
     res_ami = []
     res_fms = []
-    res_overlap_mean, res_overlap_var = compute_overlap(labels, vocabs)
+    res_overlap_mean, res_overlap_std = compute_overlap(labels, vocabs)
     for a in vocabs:
         for b in vocabs:
             if a == b:
@@ -89,10 +89,10 @@ def main(args):
             res_fms.append(res[2])
 
     print("Compared {} pairs".format(len(res_ari)), file=sys.stderr)
-    print("ARI: {} ({})".format(np.mean(res_ari), np.var(res_ari)))
-    print("AMI: {} ({})".format(np.mean(res_ami), np.var(res_ami)))
-    print("FMS: {} ({})".format(np.mean(res_fms), np.var(res_fms)))
-    print("Overlap: {} ({})".format(res_overlap_mean, res_overlap_var))
+    print("ARI: {} ({})".format(np.mean(res_ari), np.std(res_ari)))
+    print("AMI: {} ({})".format(np.mean(res_ami), np.std(res_ami)))
+    print("FMS: {} ({})".format(np.mean(res_fms), np.std(res_fms)))
+    print("Overlap: {} ({})".format(res_overlap_mean, res_overlap_std))
  
 
 def parse_args():
