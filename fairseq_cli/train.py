@@ -339,9 +339,9 @@ def train(
         with metrics.aggregate("train_inner"), torch.autograd.profiler.record_function(
             "train_step-%d" % i
         ):
-            # HACK: We want to pass the epoch length to the criterion during training
+            # HACK: We want to pass the epoch number to the criterion through the samples
             for s in samples:
-                s["num_updates_per_epoch"] = len(progress.wrapped_bar.iterable)
+                s["epoch_num"] = progress.wrapped_bar.epoch
             samples = [add_fixed_mask_to_input(s, args) for s in samples]
             log_output = trainer.train_step(samples)
 

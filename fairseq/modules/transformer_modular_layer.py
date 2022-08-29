@@ -20,10 +20,11 @@ from torch import Tensor
 
 
 class TransformerModularEncoderLayer(TransformerEncoderLayer):
-    """Encoder layer block with conditional computation support.
+    """
+    Encoder layer block with conditional computation support.
 
-    The block is extended with an additional controller subnetworks which
-    handles the masking of the mask-supporting submodules (e.g. multi-head
+    The base block is extended with additional controller subnetworks which
+    handle the masking of the mask-supporting submodules (e.g. masked multi-head
     attention) based on its input.
 
     Args:
@@ -31,16 +32,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
     """
     def __init__(self, args):
         super().__init__(args)
-        #TODO: move the ctrl building into separate class methods
-        self.ctrl_self = ModularCtrl(
-            args.encoder_embed_dim,
-            args.encoder_attention_heads,
-            hidden_depth=args.module_ctrl_hidden_depth,
-            hidden_dim=args.module_ctrl_hidden_dim,
-            dropout=args.dropout,
-            word_dropout=args.module_ctrl_word_dropout,
-            hard_samples=args.module_ctrl_hard_samples,
-            averaged_tokens=args.module_ctrl_avg_tokens)
+        self.ctrl_self = self.build_self_attn_controller(args)
 
     def build_self_attention(self, embed_dim, args):
         return MaskedMultiheadAttention(
@@ -52,6 +44,17 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             qn_block_size=self.quant_noise_block_size,
         )
 
+    def build_self_attn_controller(self, args):
+        return ModularCtrl(
+            args.encoder_embed_dim,
+            args.encoder_attention_heads,
+            hidden_depth=args.module_ctrl_hidden_depth,
+            hidden_dim=args.module_ctrl_hidden_dim,
+            dropout=args.dropout,
+            word_dropout=args.module_ctrl_word_dropout,
+            hard_samples=args.module_ctrl_hard_samples,
+            averaged_tokens=args.module_ctrl_avg_tokens)
+
     def forward(
         self,
         x,
@@ -59,7 +62,6 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         encoder_padding_mask,
         attn_mask: Optional[Tensor] = None,
         need_head_weights: bool = False,
-        ctrl_threshold: Tensor = 0.5,
         ctrl_temperature: Tensor = 1.,
     ):
         """
@@ -68,7 +70,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             encoder_padding_mask (ByteTensor): binary ByteTensor of shape
                 `(batch, src_len)` where padding elements are indicated by ``1``.
             module_mask: a fixed controller output module mask, whenever
-                an controller is defined in a Transformer layer, a controller
+                a controller is defined in a Transformer layer, a controller
                 output will be ignored and the module_mask will be used instead
             attn_mask (ByteTensor): binary tensor of shape (T_tgt, T_src), where
             T_tgt is the length of query, while T_src is the length of key,
@@ -78,8 +80,6 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             included in attentioni
             need_head_weights (bool, optional): return attention weights
                 for each head (default: return average over heads).
-            ctrl_threshold: threshold for the positive prediction in
-                the controller (default == 0.5)
             ctrl_temperature: temperature parameter for Gumbel-Softmax
 
         Returns:
@@ -100,6 +100,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         # will become -inf, which results in NaN in model parameters
         # TODO: to formally solve this problem, we need to change fairseq's
         # MultiheadAttention. We will do this later on.
+
         ctrl_out = None
         self_mod_mask = module_mask
         if self_mod_mask is not None:
@@ -107,9 +108,8 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         elif self.ctrl_self is not None:
             ctrl_out = self.ctrl_self(
                 x,
-                padding_mask=encoder_padding_mask,
-                threshold=ctrl_threshold,
-                temperature=ctrl_temperature)
+                encoder_padding_mask,
+                ctrl_temperature)
             self_mod_mask = ctrl_out.mask
 
         x, attn_weights = self.self_attn(
@@ -139,10 +139,11 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
 
 
 class TransformerModularDecoderLayer(TransformerDecoderLayer):
-    """Decoder layer block with conditional computation support.
+    """
+    Decoder layer block with conditional computation support.
 
-    The block is extended with an additional controller subnetworks which
-    handles the masking of the mask-supporting submodules (e.g. multi-head
+    The base block is extended with additional controller subnetworks which
+    handle the masking of the mask-supporting submodules (e.g. masked multi-head
     attention) based on its input.
 
     Args:
@@ -152,26 +153,8 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
     ):
         super().__init__(args, no_encoder_attn, add_bias_kv, add_zero_attn)
-        #TODO: move the ctrl building into separate class methods
-        self.ctrl_self = ModularCtrl(
-            args.decoder_embed_dim,
-            args.decoder_attention_heads,
-            hidden_depth=args.module_ctrl_hidden_depth,
-            hidden_dim=args.module_ctrl_hidden_dim,
-            dropout=args.dropout,
-            word_dropout=args.module_ctrl_word_dropout,
-            hard_samples=args.module_ctrl_hard_samples,
-            averaged_tokens=args.module_ctrl_avg_tokens)
-
-        self.ctrl_enc = ModularCtrl(
-            args.decoder_embed_dim,
-            args.decoder_attention_heads,
-            hidden_depth=args.module_ctrl_hidden_depth,
-            hidden_dim=args.module_ctrl_hidden_dim,
-            dropout=args.dropout,
-            word_dropout=args.module_ctrl_word_dropout,
-            hard_samples=args.module_ctrl_hard_samples,
-            averaged_tokens=args.module_ctrl_avg_tokens)
+        self.ctrl_self = self.build_self_attn_controller(args)
+        self.ctrl_enc = self.build_encoder_attn_controller(args)
 
     def build_self_attention(self,
                              embed_dim,
@@ -201,6 +184,28 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             qn_block_size=self.quant_noise_block_size,
         )
 
+    def build_self_attn_controller(self, args):
+        return ModularCtrl(
+            args.decoder_embed_dim,
+            args.decoder_attention_heads,
+            hidden_depth=args.module_ctrl_hidden_depth,
+            hidden_dim=args.module_ctrl_hidden_dim,
+            dropout=args.dropout,
+            word_dropout=args.module_ctrl_word_dropout,
+            hard_samples=args.module_ctrl_hard_samples,
+            averaged_tokens=args.module_ctrl_avg_tokens)
+
+    def build_encoder_attn_controller(self, args):
+        return ModularCtrl(
+            args.decoder_embed_dim,
+            args.decoder_attention_heads,
+            hidden_depth=args.module_ctrl_hidden_depth,
+            hidden_dim=args.module_ctrl_hidden_dim,
+            dropout=args.dropout,
+            word_dropout=args.module_ctrl_word_dropout,
+            hard_samples=args.module_ctrl_hard_samples,
+            averaged_tokens=args.module_ctrl_avg_tokens)
+
     def prepare_for_onnx_export_(self):
         self.onnx_trace = True
 
@@ -217,7 +222,6 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         self_attn_padding_mask: Optional[torch.Tensor] = None,
         need_attn: bool = False,
         need_head_weights: bool = False,
-        ctrl_threshold: Tensor = 0.5,
         ctrl_temperature: Tensor = 1.,
     ):
         """
@@ -232,16 +236,13 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             need_attn (bool, optional): return attention weights
             need_head_weights (bool, optional): return attention weights
                 for each head (default: return average over heads).
-            ctrl_threshold: threshold for the positive prediction in
-                the controller (default == 0.5)
             ctrl_temperature: temperature parameter for Gumbel-Softmax
 
         Returns:
             tuple of:
                 encoded output of shape `(seq_len, batch, embed_dim)`
                 selected attention heads
-                controller module
-
+                controller module output
         """
         if need_head_weights:
             need_attn = True
@@ -294,7 +295,6 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                 padding_mask=self_attn_padding_mask,
                 future_mask=self_attn_mask,
                 incremental_state=incremental_state,
-                threshold=ctrl_threshold,
                 temperature=ctrl_temperature)
             self_mod_mask = ctrl_self_out.mask
 
@@ -339,7 +339,6 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                     padding_mask=self_attn_padding_mask,
                     future_mask=self_attn_mask,
                     incremental_state=incremental_state,
-                    threshold=ctrl_threshold,
                     temperature=ctrl_temperature)
                 enc_mod_mask = ctrl_enc_out.mask
 

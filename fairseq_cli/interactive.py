@@ -226,6 +226,10 @@ def main(cfg: FairseqConfig):
                 if module_mask is not None:
                     module_mask = module_mask.cuda()
 
+            module_mask = args.module_ctrl_fixed_mask
+            if module_mask is not None:
+                module_mask = torch.Tensor([int(x) for x in module_mask.split(',')]).float()
+
             sample = {
                 "net_input": {
                     "src_tokens": src_tokens,

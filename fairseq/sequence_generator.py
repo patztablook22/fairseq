@@ -827,15 +827,21 @@ class EnsembleModel(nn.Module):
         log_probs = []
         avg_attn: Optional[Tensor] = None
         encoder_out: Optional[Dict[str, List[Tensor]]] = None
+
+        from fairseq.models.transformer_modular import TransformerModularModel
         for i, model in enumerate(self.models):
             if self.has_encoder():
                 encoder_out = encoder_outs[i]
             # decode each model
+            kwargs = {}
+            if type(model) == TransformerModularModel:
+                kwargs = { "module_mask" : module_mask }
             if self.has_incremental_states():
                 decoder_out = model.decoder.forward(
                     tokens,
                     encoder_out=encoder_out,
                     incremental_state=incremental_states[i],
+                    **kwargs,
                 )
             else:
                 if hasattr(model, "decoder"):
@@ -1034,22 +1040,17 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
         module_mask = None
         if "module_mask" in sample["net_input"]:
             module_mask = sample["net_input"]["module_mask"]
-        ctrl_threshold = None
-        if "ctrl_threshold" in sample["net_input"]:
-            ctrl_threshold = sample["net_input"]["ctrl_threshold"]
 
         bsz = src_tokens.shape[0]
         beam_size = self.beam_size
 
         src_tokens, src_lengths, prev_output_tokens = self._prepare_batch_for_module_mask(
-            sample,
-            finalized)
+            sample, finalized)
         ctrl_outputs = self.model.forward_modular(
             src_tokens,
             src_lengths,
             prev_output_tokens,
             module_mask,
-            ctrl_threshold,
         )
 
         def get_module_mask_string(ctrl_out, i):
@@ -1083,11 +1084,10 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
             for key in self.ctrl_keys:
                 if key in ctrl_outputs:
                     module_mask = ';'.join([
-                        '{}:{}'.format(layer_num, get_module_probs_string(ctrl_out, i))
+                        '{}:{}'.format(layer_num, get_module_mask_string(ctrl_out, i))
                         for layer_num, ctrl_out in enumerate(ctrl_outputs[key])
                     ])
-                    finalized[i // beam_size][i % beam_size]['{}_probs'.format(key)] = module_mask
-
+                    finalized[i // beam_size][i % beam_size]['{}_mask'.format(key)] = module_mask
         return finalized
 
     def _prepare_batch_for_module_mask(self, sample, hypothesis):
@@ -1226,9 +1226,7 @@ class EnsembleModelWithModuleMask(EnsembleModel):
                         src_tokens,
                         src_lengths,
                         prev_output_tokens,
-                        module_mask=None,
-                        ctrl_threshold=0.5
-    ):
+                        module_mask=None):
         ctrl_outputs = []
 
         # TODO: how do we treat module masks in ensembles?
@@ -1241,7 +1239,6 @@ class EnsembleModelWithModuleMask(EnsembleModel):
                 src_tokens,
                 src_lengths,
                 module_mask=module_mask,
-                ctrl_threshold=ctrl_threshold,
             )
             # We split the encoding and decoding stage so we can pass None incremental_state to the decoder
             # to apply futuru_mask to the prev_output_tokens in the controller
@@ -1249,84 +1246,14 @@ class EnsembleModelWithModuleMask(EnsembleModel):
                 prev_output_tokens,
                 encoder_out=encoder_out,
                 incremental_state=None,
-                module_mask=module_mask,
                 src_lengths=src_lengths,
-                ctrl_threshold=ctrl_threshold,
+                module_mask=module_mask,
             )
             ctrl_outputs.append(decoder_out[1]['ctrl_outputs'])
 
         if len(self.models) > 1:
             return self._average_ctrl_outputs(ctrl_outputs)
         return ctrl_outputs[0]
-
-    @torch.jit.export
-    def forward_decoder(self,
-                        tokens,
-                        encoder_outs: List[EncoderOut],
-                        temperature: float = 1.0,
-                        module_mask=None,
-                        ctrl_threshold=0.5,
-    ):
-        """Identical to the parent method.
-
-        Only difference is passing of module_mask and ctrl_threshold parameter to the decoder.
-        """
-        log_probs = []
-        avg_attn: Optional[Tensor] = None
-        encoder_out: Optional[EncoderOut] = None
-        for i, model in enumerate(self.models):
-            if self.has_encoder():
-                encoder_out = encoder_outs[i]
-            # decode each model
-            if self.has_incremental_states():
-                decoder_out = model.decoder.forward(
-                    tokens,
-                    encoder_out=encoder_out,
-                    incremental_state=self.incremental_states[i],
-                    module_mask=module_mask,
-                    ctrl_threshold=ctrl_threshold,
-                )
-            else:
-                decoder_out = model.decoder.forward(tokens, encoder_out=encoder_out, module_mask=module_mask)
-
-            attn: Optional[Tensor] = None
-            decoder_len = len(decoder_out)
-            if decoder_len > 1 and decoder_out[1] is not None:
-                if isinstance(decoder_out[1], Tensor):
-                    attn = decoder_out[1]
-                else:
-                    attn_holder = decoder_out[1]["attn"]
-                    if isinstance(attn_holder, Tensor):
-                        attn = attn_holder
-                    elif attn_holder is not None:
-                        attn = attn_holder[0]
-                if attn is not None:
-                    attn = attn[:, -1, :]
-
-            decoder_out_tuple = (
-                decoder_out[0][:, -1:, :].div_(temperature),
-                None if decoder_len <= 1 else decoder_out[1],
-            )
-
-            probs = model.get_normalized_probs(
-                decoder_out_tuple, log_probs=True, sample=None
-            )
-            probs = probs[:, -1, :]
-            if self.models_size == 1:
-                return probs, attn
-
-            log_probs.append(probs)
-            if attn is not None:
-                if avg_attn is None:
-                    avg_attn = attn
-                else:
-                    avg_attn.add_(attn)
-        avg_probs = torch.logsumexp(torch.stack(log_probs, dim=0), dim=0) - math.log(
-            self.models_size
-        )
-        if avg_attn is not None:
-            avg_attn.div_(self.models_size)
-        return avg_probs, avg_attn
 
     def _average_ctrl_outputs(self, ctrl_outputs):
         raise NotImplementedError("transformer_modular currently does not support ensemble decoding")
