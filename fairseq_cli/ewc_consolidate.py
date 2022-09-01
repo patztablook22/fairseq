@@ -155,7 +155,8 @@ def main(args):
             loss.backward()
 
     # Average gradients and compute fisher diagonal
-    fisher_diagonals = [(p.grad / n_samples) ** 2 for n, p in model.named_parameters()]
+    #fisher_diagonals = [(p.grad / n_samples) ** 2 for n, p in model.named_parameters()]
+    fisher_diagonals = [(p.grad ** 2) / n_samples for n, p in model.named_parameters()]
 
     param_names = [
         n.replace('.', '__') for n, p in model.named_parameters()

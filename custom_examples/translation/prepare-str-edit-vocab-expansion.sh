@@ -7,7 +7,7 @@ SIZE=${1:-30000}
 OP=${2:-"id"}
 CHARPAIRS=${3:-"a-b c-d a-c b-d"}
 
-OUTDIR=$WD/string-edit.$OP.$SIZE
+OUTDIR=$WD/str-edit.vocab.$OP.$SIZE
 TMPDIR=$OUTDIR/tmp.d
 
 mkdir -p $OUTDIR $TMPDIR
@@ -18,7 +18,7 @@ for pair in $CHARPAIRS; do
     one_char=`echo $pair | cut -d'-' -f2`
     for n in 15 20 25 30 35 40; do
         echo "Creating '$pair.$n' dataset..." >&2
-        tmp_out=$TMPDIR/bitedit.$pair.$n
+        tmp_out="$TMPDIR/$pair.$n"
         $GENERATOR \
             --seed 42 \
             --task $OP \
@@ -29,9 +29,9 @@ for pair in $CHARPAIRS; do
             --one-char $one_char \
             > $tmp_out
 
-        awk '{if (NR <= 1000) print $0;}' $tmp_out > $TMPDIR/$pair.$n.valid
-        awk '{if (NR > 1000 && NR <= 2000) print $0;}' $tmp_out > $TMPDIR/$pair.$n.test
-        awk '{if (NR > 2000) print $0;}' $tmp_out > $TMPDIR/$pair.$n.train
+        awk '{if (NR <= 1000) print $0;}' $tmp_out > $tmp_out.valid
+        awk '{if (NR > 1000 && NR <= 2000) print $0;}' $tmp_out > $tmp_out.test
+        awk '{if (NR > 2000) print $0;}' $tmp_out > $tmp_out.train
 
         for t in train valid test; do
             f_in=$TMPDIR/$pair.$n.$t
