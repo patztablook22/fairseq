@@ -1132,7 +1132,11 @@ class EnsembleModelWithModuleMask(EnsembleModel):
         return ctrl_outputs[0]
 
     def _average_ctrl_outputs(self, ctrl_outputs):
-        raise NotImplementedError("transformer_modular currently does not support ensemble decoding")
+        return {
+            key: torch.stack(
+                [ctrl_outs[key] for ctrl_outs in ctrl_outputs], 0).mean(0)
+            for key in ctrl_outputs[0]
+        }
 
 
 class ModelWithAttentionWeights(EnsembleModel):
