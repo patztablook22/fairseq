@@ -59,7 +59,7 @@ def compute_masked_budget(controllers, mask_budget):
         res = n_masked / (n_all + _EPS)
 
         assert res.dim() == 1
-        return (res - mask_budget)^2
+        return torch.sqrt((res - mask_budget)**2)
     return torch.tensor([0.])
 
 
@@ -99,18 +99,12 @@ def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=T
     return loss, nll_loss
 
 
-# TODO: move these two methods somewhere else (into the criterion class?)
 def exponential_annealing(temp, step, anneal_rate, min_temp):
     return max(temp * math.exp(-anneal_rate * step), min_temp)
 
 
-def linear_annealing(step, anneal_rate, min_temp, max_temp):
-    return max(max_temp - step * anneal_rate, min_temp)
-
-
 def cosine_annealing(step, max_steps, min_temp, max_temp):
-    if max_temp < min_temp:
-        return min_temp
+    assert max_temp > min_temp
     return min_temp + 0.5 * (max_temp - min_temp) * (1 + math.cos(math.pi * step / max_steps))
 
 
@@ -126,7 +120,7 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
                  module_ctrl_anneal_type,
                  module_ctrl_anneal_rate,
                  module_ctrl_cosine_reset_decay,
-                 module_ctrl_cosine_reset_every_n_epochs,
+                 module_ctrl_cosine_reset_every_n_steps,
                  module_kl_div_regularizer_ratio,
                  module_kl_div_regularizer_weight,
                  module_budget_regularizer_ratio,
@@ -139,7 +133,7 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
         self.module_ctrl_anneal_type = module_ctrl_anneal_type
         self.module_ctrl_anneal_rate = module_ctrl_anneal_rate
         self.module_ctrl_cosine_reset_decay = module_ctrl_cosine_reset_decay
-        self.module_ctrl_cosine_reset_every_n_epochs = module_ctrl_cosine_reset_every_n_epochs
+        self.module_ctrl_cosine_reset_every_n_steps = module_ctrl_cosine_reset_every_n_steps
 
         self.module_kl_div_regularizer_ratio = module_kl_div_regularizer_ratio
         self.module_kl_div_regularizer_weight = module_kl_div_regularizer_weight
@@ -165,7 +159,7 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
                             help='temperature anneal rate (exponential annealing) for controller\'s gumbel_sigmoid')
         parser.add_argument('--module-ctrl-cosine-reset-decay', type=float, default=0.95,
                             help='TODO')
-        parser.add_argument('--module-ctrl-cosine-reset-every-n-epochs', type=float, default=1.,
+        parser.add_argument('--module-ctrl-cosine-reset-every-n-steps', type=float, default=1.,
                             help='TODO')
         parser.add_argument('--module-kl-div-regularizer-ratio', type=float, default=.5,
                             help='a regularization ratio of modules that should be unmasked by the controller (used in kl_div regularizer)')
@@ -187,7 +181,6 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
         """
         if self.training:
             step = sample["update_num"]
-            steps_per_epoch = sample["num_updates_per_epoch"]
             if self.module_ctrl_anneal_type == 'exponential':
                 self.temp = exponential_annealing(
                     self.temp,
@@ -195,19 +188,12 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
                     self.module_ctrl_anneal_rate,
                     self.module_ctrl_min_temperature)
             elif self.module_ctrl_anneal_type == 'cosine':
-                steps_per_epoch *= self.module_ctrl_cosine_reset_every_n_epochs
-                step = step % steps_per_epoch
+                step = (step + 1) % self.module_ctrl_cosine_reset_every_n_steps
                 if step == 0:
                     self.module_ctrl_max_temperature *= self.module_ctrl_cosine_reset_decay
                 self.temp = cosine_annealing(
                     step,
-                    steps_per_epoch,
-                    self.module_ctrl_min_temperature,
-                    self.module_ctrl_max_temperature)
-            elif self.module_ctrl_anneal_type == 'linear':
-                self.temp = linear_annealing(
-                    step,
-                    self.module_ctrl_anneal_rate,
+                    self.module_ctrl_cosine_reset_every_n_steps,
                     self.module_ctrl_min_temperature,
                     self.module_ctrl_max_temperature)
             elif self.module_ctrl_anneal_type == 'constant':
