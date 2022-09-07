@@ -184,14 +184,16 @@ class ModularCtrl(nn.Module):
             # future_mask contains values to mask decoder self-attn "before_softmax"
             # we need to set 1 to nonmasked tokens (0. in the original)
             # and 0 to masked ones (-inf in the original) instead
-            future_mask = (future_mask == 0.).float()
+            future_mask = (future_mask == torch.tensor(0.)).float()
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
         else:
             saved_state = None
 
-        if saved_state is not None:
+        # We need previous states only when the current token mask is predicted
+        # using the whole available sequence
+        if saved_state is not None and self.averaged_tokens:
             # (prev_x) saved states are stored with shape (bsz, seq_len, input_dim)
             if "prev_x" in saved_state:
                 prev_x = saved_state["prev_x"]
@@ -232,7 +234,7 @@ class ModularCtrl(nn.Module):
         else:
             sampled_probs = torch.sigmoid(logits)
             sampled_probs = ModularCtrl._mask_output_probs(sampled_probs, padding_mask)
-            module_mask = (sampled_probs > threshold).float()
+            module_mask = (sampled_probs > 0.5).float()
 
         return ModularCtrlOut(
             logits=logits,
