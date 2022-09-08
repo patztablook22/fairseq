@@ -41,7 +41,7 @@ from .transformer_sentence_encoder_layer import TransformerSentenceEncoderLayer
 from .transformer_sentence_encoder import TransformerSentenceEncoder
 from .transpose_last import TransposeLast
 from .unfold import unfold1d
-from .transformer_layer import TransformerDecoderLayer, TransformerEncoderLayer
+from .transformer_layer import FeedForwardBlock, TransformerDecoderLayer, TransformerEncoderLayer
 from .transformer_modular_layer import (
     TransformerModularEncoderLayer,
     TransformerModularDecoderLayer
@@ -73,6 +73,7 @@ __all__ = [
     "EMAModule",
     "EMAModuleConfig",
     "FairseqDropout",
+    "FeedForwardBlock",
     "Fp32BatchNorm",
     "Fp32GroupNorm",
     "Fp32LayerNorm",
@@ -90,9 +91,9 @@ __all__ = [
     "LinearizedConvolution",
     "LocationAttention",
     "LSTMCellWithZoneOut",
-    'ModularCtrl',
-    'ModularCtrlOut',
-    'ModularMultiheadAttention',
+    "MaskedMultiheadAttention",
+    "ModularCtrl",
+    "ModularCtrlOut",
     "MultiheadAttention",
     "PositionalEmbedding",
     "SamePad",

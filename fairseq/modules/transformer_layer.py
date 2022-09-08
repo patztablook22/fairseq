@@ -562,3 +562,49 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
             embed_dim,
             TransformerConfig.from_namespace(args),
         )
+
+def Linear(in_features, out_features, bias=True):
+    m = nn.Linear(in_features, out_features, bias)
+    nn.init.xavier_uniform_(m.weight)
+    if bias:
+        nn.init.constant_(m.bias, 0.0)
+    return m
+
+
+class FeedForwardBlock(nn.Module):
+    """
+    Wrapper for the feedforward Transformer block.
+
+    TODO
+    """
+    def __init__(self,
+                 embed_dim,
+                 ffn_embed_dim,
+                 activation_fn,
+                 dropout=0.0,
+                 activation_dropout=0.0,
+                 bias=True,
+                 q_noise=0.0,
+                 qn_block_size=8):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.ffn_embed_dim = ffn_embed_dim
+        self.dropout = dropout
+        self.activation_dropout = activation_dropout
+        self.activation_fn = activation_fn
+
+        self.fc1 = self.build_fc1(embed_dim, ffn_embed_dim, bias, q_noise, qn_block_size)
+        self.fc2 = self.build_fc2(ffn_embed_dim, embed_dim, bias, q_noise, qn_block_size)
+
+    def build_fc1(self, input_dim, output_dim, bias, q_noise, qn_block_size):
+        quant_noise(nn.Linear(input_dim, output_dim, bias=bias), p=q_noise, block_size=qn_block_size)
+
+    def build_fc2(self, input_dim, output_dim, bias, q_noise, qn_block_size):
+        quant_noise(nn.Linear(input_dim, output_dim, bias=bias), p=q_noise, block_size=qn_block_size)
+
+    def forward(self, x):
+        """TODO"""
+        x = self.activation_fn(self.fc1(x))
+        x = F.dropout(x, p=float(self.activation_dropout), training=self.training)
+        x = self.fc2(x)
+        return F.dropout(x, p=self.dropout, training=self.training)
