@@ -31,7 +31,7 @@ from .sinusoidal_positional_embedding import SinusoidalPositionalEmbedding
 from .transformer_sentence_encoder_layer import TransformerSentenceEncoderLayer
 from .transformer_sentence_encoder import TransformerSentenceEncoder
 from .unfold import unfold1d
-from .transformer_layer import TransformerDecoderLayer, TransformerEncoderLayer
+from .transformer_layer import FeedForwardBlock, TransformerDecoderLayer, TransformerEncoderLayer
 from .transformer_modular_layer import (
     TransformerModularEncoderLayer,
     TransformerModularDecoderLayer
@@ -49,6 +49,7 @@ __all__ = [
     'DynamicConv1dTBC',
     'DynamicConv',
     'DynamicCRF',
+    'FeedForwardBlock',
     'Fp32GroupNorm',
     'Fp32LayerNorm',
     'gelu',
@@ -62,10 +63,10 @@ __all__ = [
     'LightweightConv1dTBC',
     'LightweightConv',
     'LinearizedConvolution',
-    'MultiheadAttention',
+    'MaskedMultiheadAttention',
     'ModularCtrl',
     'ModularCtrlOut',
-    'MaskedMultiheadAttention',
+    'MultiheadAttention',
     'PositionalEmbedding',
     'ScalarBias',
     'SinusoidalPositionalEmbedding',
