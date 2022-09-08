@@ -156,15 +156,18 @@ def main(args):
 
     # Average gradients and compute fisher diagonal
     #fisher_diagonals = [(p.grad / n_samples) ** 2 for n, p in model.named_parameters()]
-    fisher_diagonals = [(p.grad ** 2) / n_samples for n, p in model.named_parameters()]
+    # TODO: Should we also compute FI for parameters that are "frozen"?
+    fisher_diagonals = [(p.grad ** 2) / n_samples for n, p in model.named_parameters() if p.grad is not None]
 
     param_names = [
-        n.replace('.', '__') for n, p in model.named_parameters()
+        n.replace('.', '__') for n, p in model.named_parameters() if p.grad is not None
     ]
     fisher = {n: f.detach() for n, f in zip(param_names, fisher_diagonals)}
 
     # Consolidate
     for n, p in model.named_parameters():
+        if p.grad is None:
+            continue
         n = n.replace('.', '__')
         model.register_buffer('{}_mean'.format(n), p.data.clone())
         model.register_buffer('{}_fisher'.format(n), fisher[n].data.clone())

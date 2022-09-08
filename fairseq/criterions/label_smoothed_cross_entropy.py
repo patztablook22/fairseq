@@ -155,7 +155,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         sample_size = sum(log.get('sample_size', 0) for log in logging_outputs)
 
         metrics.log_scalar('loss', loss_sum / sample_size / math.log(2), sample_size, round=3)
-        metrics.log_scalar('ewc_loss', ewc_loss_sum / sample_size / math.log(2), 1, round=5)
+        metrics.log_scalar('ewc_raw_loss', ewc_loss_sum / sample_size / math.log(2), 1, round=5)
         metrics.log_scalar('nll_loss', nll_loss_sum / ntokens / math.log(2), ntokens, round=3)
         metrics.log_derived('ppl', lambda meters: utils.get_perplexity(meters['nll_loss'].avg))
 
@@ -165,7 +165,7 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
             metrics.log_scalar(k, ewc_logs[k], 1, round=5)
 
         ewc_lambda = logging_outputs[0].get('ewc_lambda', 1.)
-        metrics.log_scalar('ewc_2_loss', ewc_loss_sum * ewc_lambda / sample_size / math.log(2), 1, round=5)
+        metrics.log_scalar('ewc_loss', (ewc_loss_sum * ewc_lambda) / sample_size / math.log(2), 1, round=5)
 
     @staticmethod
     def logging_outputs_can_be_summed() -> bool:

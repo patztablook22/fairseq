@@ -27,6 +27,7 @@ RESET_OPTIMIZER_OPT=
 
 # Training Details
 RANDOM_SEED=42
+INITIAL_EPOCH=0  # used with initial checkpoint (which have non-zero epoch number)
 EPOCHS=100
 LABEL_SMOOTHING=0.1
 MAX_TOKENS=4096
@@ -54,11 +55,11 @@ EVAL_SCRIPT=process_checklist.sh  # Validation wrapper (called at the end of eac
 
 # EWC
 EWC_LAMBDA="0."
-EWC_TERM_TYPE="original"
+EWC_TERM_TYPE="original"  # original, norm_1, norm_2
 EWC_EST_SUBSET="valid"
 EWC_NORM="tokens"  # tokens, sentences, batches
 
-# Parameter freeze (for consequtive tasks)
+# Parameter freeze (for consecutive tasks)
 FREEZE_PARAMS=
 
 HELP=1
@@ -95,6 +96,10 @@ case $key in
     ;;
     --epochs)
         EPOCHS="$2"
+        shift
+    ;;
+    --initial-epoch)
+        INITIAL_EPOCH="$2"
         shift
     ;;
     --emb-size)
@@ -239,26 +244,26 @@ MODEL_DIR="$MODEL_DIR.depth-$DEPTH"
 MODEL_DIR="$MODEL_DIR.smooth-$LABEL_SMOOTHING"
 MODEL_DIR="$MODEL_DIR.patience-$PATIENCE"
 MODEL_DIR="$MODEL_DIR.lr-$LR"
-[[ "$EWC_LAMBDA" != "0." ]] && MODEL_DIR="$MODEL_DIR.ewc-$EWC_TERM_TYPE-$EWC_LAMBDA"
+[[ "$EWC_LAMBDA" != "0." ]] && MODEL_DIR="$MODEL_DIR.ewc-$EWC_TERM_TYPE-$EWC_LAMBDA.ewc-est-$EWC_EST_SUBSET-$EWC_NORM"
 #MODEL_DIR="$MODEL_DIR.max-tokens-$MAX_TOKENS"
 [[ -z "$RESET_OPTIMIZER_OPT" ]] || MODEL_DIR="$MODEL_DIR.reset-optim"
 
 [[ -d $MODEL_DIR ]] && rm -r $MODEL_DIR
-mkdir $MODEL_DIR
+mkdir $MODEL_DIR && mkdir $MODEL_DIR/checkpoints
 echo $TASKS | sed 's/ /->/g' > $MODEL_DIR/TASKS
 echo $FREEZE_PARAMS > $MODEL_DIR/FREEZE_PARAMS
 
 ckpt_opt=
-[[ -e "$INIT_CKPT" ]] && ckpt_opt="--restore-file $INIT_CKPT"
-epochs=$EPOCHS
+[[ -e "$INIT_CKPT" ]] && ckpt_opt="--restore-file $INIT_CKPT" && cp $INIT_CKPT $MODEL_DIR/checkpoints/checkpoint_last.pt
+epochs=`expr $INITIAL_EPOCH + $EPOCHS`
 valid_sets=`echo $VALID_TASKS | sed 's/ /.valid,/g;s/$/.valid/'`
 for current_task in $TASKS; do
     echo Training $current_task...
 
-    PARAM_FREEZE_OPT=
-    [[ -e "$MODEL_DIR/checkpoints/checkpoint_last.pt" ]] \
-        && [[ -n $FREEZE_PARAMS ]] \
-        && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
+     PARAM_FREEZE_OPT=
+    if [[ -e "$MODEL_DIR/checkpoints/checkpoint_last.pt" ]] || [[ -e "$INIT_CKPT" ]]; then
+        [[ -n $FREEZE_PARAMS ]] && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
+    fi
 
     jid=$(qsubmit \
         --queue="gpu-troja.q" \
@@ -371,9 +376,10 @@ for current_task in $TASKS; do
             --src $SRC \
             --tgt $TGT \
             --expdir $MODEL_DIR \
-            --tasks "`echo $VALID_TASKS | sed 's/\.[^ ]* / /g;s/\.[^ ]*$//'`" \
+            --tasks "`echo $VALID_TASKS | sed 's/\.[^. ]* / /g;s/\.[^. ]*$//'`" \
             --eval-dir $EVAL_DIR \
-            --eval-prefix "$t" &
+            --eval-prefix "$t" \
+        | tee -a $MODEL_DIR/logs/$current_task.eval.log &
     done
 
     epochs=`expr $epochs + $EPOCHS`
