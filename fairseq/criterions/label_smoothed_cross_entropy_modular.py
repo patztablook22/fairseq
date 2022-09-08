@@ -42,9 +42,10 @@ def compute_masked_ratio(controllers):
     if n_all:
         n_masked = torch.stack(n_masked, 0).sum(0)
         n_all = torch.stack(n_all, 0).sum(0)
+        res = n_masked / (n_all + _EPS)
 
-        assert n_masked.dim() == 1 and n_all.dim() == 1
-        return n_masked / (n_all + _EPS)
+        assert res.dim() == 1
+        return res
     return torch.tensor([0.])
 
 
@@ -282,11 +283,11 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
 
         metrics.log_scalar('loss', loss_sum / sample_size / math.log(2), sample_size, round=3)
         metrics.log_scalar('nll_loss', nll_loss_sum / ntokens / math.log(2), ntokens, round=3)
-        metrics.log_scalar('module_KL_div', kl_div_sum / nsentences / math.log(2), nsentences, round=3)
-        metrics.log_scalar('module_mask_budget', mask_budget_sum / nsentences / math.log(2), nsentences, round=3)
-        metrics.log_scalar('module_mask_ratio', mask_ratio_sum / nsentences / math.log(2), nsentences, round=3)
-        metrics.log_scalar('sel_entropy', sel_entropy / math.log(2), 1, round=3)
-        metrics.log_scalar('batch_entropy', batch_entropy / math.log(2), 1, round=3)
+        metrics.log_scalar('module_KL_div', kl_div_sum / nsentences, nsentences, round=3)
+        metrics.log_scalar('module_mask_budget', mask_budget_sum / nsentences, nsentences, round=3)
+        metrics.log_scalar('module_mask_ratio', mask_ratio_sum / nsentences, nsentences, round=3)
+        metrics.log_scalar('sel_entropy', sel_entropy, 1, round=3)
+        metrics.log_scalar('batch_entropy', batch_entropy, 1, round=3)
         metrics.log_derived('ppl', lambda meters: utils.get_perplexity(meters['nll_loss'].avg))
         metrics.log_scalar('temperature', temp, 1, round=3)
 
