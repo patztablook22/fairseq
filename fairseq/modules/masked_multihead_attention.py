@@ -259,7 +259,7 @@ class MaskedMultiheadAttention(MultiheadAttention):
         # The masking is inspired by Michel et al. (2019), "Are Sixteen Heads Really Better than One?"
         # (https://github.com/pmichel31415/fairseq/blob/master/fairseq/modules/multihead_attention.py#L196)
         if module_mask is not None:
-            module_mask = module_mask.transpose(1, 2).contiguous().unsqueeze(-1)
+            module_mask = module_mask.transpose(1, 2).unsqueeze(-1)
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) * module_mask
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
