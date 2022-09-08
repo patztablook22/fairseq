@@ -409,3 +409,90 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
 
         if self.ctrl_enc is not None:
             self.ctrl_enc.reorder_incremental_state(incremental_state, new_order)
+
+
+class FeedForwardBlock(nn.Module):
+    """
+    Wrapper for the feedforward Transformer block.
+
+    TODO
+    """
+    def __init__(self,
+                 embed_dim,
+                 ffn_embed_dim,
+                 activation_fn,
+                 dropout=0.0,
+                 activation_dropout=0.0,
+                 bias=True,
+                 q_noise=0.0,
+                 qn_block_size=8):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.ffn_embed_dim = ffn_embed_dim
+        self.dropout = dropout
+        self.activation_dropout = activation_dropout
+        self.activation_fn = activation_fn
+
+        self.fc1 = self.build_fc1(embed_dim, ffn_embed_dim, bias, q_noise, qn_block_size)
+        self.fc2 = self.build_fc2(ffn_embed_dim, embed_dim, bias, q_noise, qn_block_size) 
+
+    def build_fc1(self, input_dim, output_dim, bias=bias, q_noise, qn_block_size):
+        quant_noise(nn.Linear(input_dim, output_dim, bias=bias), p=q_noise, block_size=qn_block_size)
+
+    def build_fc2(self, input_dim, output_dim, bias=bias, q_noise, qn_block_size):
+        quant_noise(nn.Linear(input_dim, output_dim, bias=bias), p=q_noise, block_size=qn_block_size)
+
+    def forward(self, x):
+        """TODO"""
+        x = self.activation_fn(self.fc1(x))
+        x = F.dropout(x, p=float(self.activation_dropout), training=self.training)
+        x = self.fc2(x)
+        return F.dropout(x, p=self.dropout, training=self.training)
+
+
+class MaskedFeedForwardBlock(FeedForwardBlock):
+    """
+    Wrapper for the feedforward Transformer block allowing module masking.
+
+    TODO
+    """
+    def __init__(self,
+                 embed_dim,
+                 ffn_embed_dim,
+                 num_modules,
+                 activation_fn,
+                 dropout=0.0,
+                 activation_dropout=0.0,
+                 bias=True,
+                 q_noise=0.0,
+                 qn_block_size=8):
+        super().__init__(
+            embed_dim,
+            ffn_embed_dim,
+            activation_fn,
+            dropout,
+            activation_dropout,
+            bias,
+            q_noise,
+            qn_block_size)
+
+        self.num_modules = num_modules
+        self.module_dim = ffn_embed_dim // num_modules
+        assert (
+            self.module_dim * num_modules == self.ffn_embed_dim
+        ), "ffn_embed_dim must be divisible by num_modules"
+
+    def forward(self, x, module_mask: Tensor) -> Tensor:
+        """TODO"""
+        x_proj = self.activation_fn(self.fc1(x))
+        x_proj = F.dropout(x_proj, p=float(self.activation_dropout), training=self.training)
+
+        x_len, bsz, ffn_embed_dim = x_proj.size()
+        x_proj = x_proj.contiguous().view(x_len, bsz, self.num_modules, self.module_dim)
+
+        module_mask = module_mask.transpose(0, 1).unsqueeze(-1)
+        x_proj = x_proj * module_mask
+        x_proj = x_proj.view(x_len, bsz, self.ffn_embed_dim)
+
+        y = self.fc2(x_proj)
+        return F.dropout(y, p=self.dropout, training=self.training)
