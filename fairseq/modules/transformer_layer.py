@@ -37,28 +37,29 @@ class TransformerEncoderLayer(nn.Module):
         self.self_attn = self.build_self_attention(self.embed_dim, args)
         self.self_attn_layer_norm = LayerNorm(self.embed_dim)
         self.dropout = args.dropout
-        self.activation_fn = utils.get_activation_fn(
-            activation=getattr(args, "activation_fn", "relu")
-        )
-        self.activation_dropout = getattr(args, "activation_dropout", 0)
-        if self.activation_dropout == 0:
-            # for backwards compatibility with models that use args.relu_dropout
-            self.activation_dropout = getattr(args, "relu_dropout", 0)
         self.normalize_before = args.encoder_normalize_before
-        self.fc1 = self.build_fc1(
-            self.embed_dim, args.encoder_ffn_embed_dim, self.quant_noise, self.quant_noise_block_size
-        )
-        self.fc2 = self.build_fc2(
-            args.encoder_ffn_embed_dim, self.embed_dim, self.quant_noise, self.quant_noise_block_size
-        )
 
+        self.ffn = self.build_ffn(self.embed_dim, args)
         self.final_layer_norm = LayerNorm(self.embed_dim)
 
-    def build_fc1(self, input_dim, output_dim, q_noise, qn_block_size):
-        return quant_noise(nn.Linear(input_dim, output_dim), p=q_noise, block_size=qn_block_size)
+    def build_ffn(self, embed_dim, args):
+        activation_fn = utils.get_activation_fn(
+            activation=getattr(args, "activation_fn", "relu")
+        )
 
-    def build_fc2(self, input_dim, output_dim, q_noise, qn_block_size):
-        return quant_noise(nn.Linear(input_dim, output_dim), p=q_noise, block_size=qn_block_size)
+        activation_dropout = getattr(args, "activation_dropout", 0.0)
+        if activation_dropout == 0.0:
+            # for backwards compatibility with models that use args.relu_dropout
+            activation_dropout = getattr(args, "relu_dropout", 0.0)
+
+        return FeedForwardBlock(
+            embed_dim,
+            args.encoder_ffn_embed_dim,
+            activation_fn=activation_fn,
+            dropout=self.dropout,
+            activation_dropout=activation_dropout,
+            q_noise=self.quant_noise,
+            qn_block_size=quant_noise_block_size)
 
     def build_self_attention(self, embed_dim, args):
         return MultiheadAttention(
@@ -136,10 +137,7 @@ class TransformerEncoderLayer(nn.Module):
         if self.normalize_before:
             x = self.final_layer_norm(x)
 
-        x = self.activation_fn(self.fc1(x))
-        x = F.dropout(x, p=float(self.activation_dropout), training=self.training)
-        x = self.fc2(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.ffn(x)
         x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
@@ -180,13 +178,6 @@ class TransformerDecoderLayer(nn.Module):
             add_bias_kv=add_bias_kv,
             add_zero_attn=add_zero_attn,
         )
-        self.activation_fn = utils.get_activation_fn(
-            activation=getattr(args, "activation_fn", "relu")
-        )
-        self.activation_dropout = getattr(args, "activation_dropout", 0)
-        if self.activation_dropout == 0:
-            # for backwards compatibility with models that use args.relu_dropout
-            self.activation_dropout = getattr(args, "relu_dropout", 0)
         self.normalize_before = args.decoder_normalize_before
 
         # use layerNorm rather than FusedLayerNorm for exporting.
@@ -202,23 +193,30 @@ class TransformerDecoderLayer(nn.Module):
             self.encoder_attn = self.build_encoder_attention(self.embed_dim, args)
             self.encoder_attn_layer_norm = LayerNorm(self.embed_dim, export=export)
 
-        self.fc1 = self.build_fc1(
-            self.embed_dim, args.decoder_ffn_embed_dim, self.quant_noise, self.quant_noise_block_size
-        )
-        self.fc2 = self.build_fc2(
-            args.decoder_ffn_embed_dim, self.embed_dim, self.quant_noise, self.quant_noise_block_size
-        )
-
+        self.ffn = self.build_ffn(self.embed_dim, args)
         self.final_layer_norm = LayerNorm(self.embed_dim, export=export)
         self.need_attn = True
 
         self.onnx_trace = False
 
-    def build_fc1(self, input_dim, output_dim, q_noise, qn_block_size):
-        return quant_noise(nn.Linear(input_dim, output_dim), q_noise, qn_block_size)
+    def build_ffn(self, embed_dim, args):
+        activation_fn = utils.get_activation_fn(
+            activation=getattr(args, "activation_fn", "relu")
+        )
 
-    def build_fc2(self, input_dim, output_dim, q_noise, qn_block_size):
-        return quant_noise(nn.Linear(input_dim, output_dim), q_noise, qn_block_size)
+        activation_dropout = getattr(args, "activation_dropout", 0.0)
+        if activation_dropout == 0.0:
+            # for backwards compatibility with models that use args.relu_dropout
+            activation_dropout = getattr(args, "relu_dropout", 0.0)
+
+        return FeedForwardBlock(
+            embed_dim,
+            args.decoder_ffn_embed_dim,
+            activation_fn=activation_fn,
+            dropout=self.dropout,
+            activation_dropout=activation_dropout,
+            q_noise=self.quant_noise,
+            qn_block_size=quant_noise_block_size)
 
     def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False):
         return MultiheadAttention(
@@ -365,10 +363,7 @@ class TransformerDecoderLayer(nn.Module):
         if self.normalize_before:
             x = self.final_layer_norm(x)
 
-        x = self.activation_fn(self.fc1(x))
-        x = F.dropout(x, p=float(self.activation_dropout), training=self.training)
-        x = self.fc2(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        x = self.ffn(x)
         x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
@@ -436,10 +431,14 @@ class FeedForwardBlock(nn.Module):
         self.fc2 = self.build_fc2(ffn_embed_dim, embed_dim, bias, q_noise, qn_block_size)
 
     def build_fc1(self, input_dim, output_dim, bias, q_noise, qn_block_size):
-        quant_noise(nn.Linear(input_dim, output_dim, bias=bias), p=q_noise, block_size=qn_block_size)
+        return quant_noise(
+            nn.Linear(input_dim, output_dim, bias=bias),
+            p=q_noise, block_size=qn_block_size)
 
     def build_fc2(self, input_dim, output_dim, bias, q_noise, qn_block_size):
-        quant_noise(nn.Linear(input_dim, output_dim, bias=bias), p=q_noise, block_size=qn_block_size)
+        return quant_noise(
+            nn.Linear(input_dim, output_dim, bias=bias),
+            p=q_noise, block_size=qn_block_size)
 
     def forward(self, x):
         """TODO"""

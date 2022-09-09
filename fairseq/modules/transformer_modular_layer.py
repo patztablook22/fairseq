@@ -33,7 +33,45 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
     """
     def __init__(self, args):
         super().__init__(args)
-        self.ctrl_self = self.build_self_attn_controller(args)
+        self.ctrl_ffn = None
+        if args.encoder_ffn_modules is not None:
+            self.ctrl_ffn = self.build_ffn_controller(args)
+
+        self.ctrl_self = None
+        if args.module_ctrl_encoder_attn:
+            self.ctrl_self = self.build_self_attn_controller(args)
+
+    def build_ffn(self, embed_dim, args):
+        activation_fn = utils.get_activation_fn(
+            activation=getattr(args, "activation_fn", "relu")
+        )
+
+        activation_dropout = getattr(args, "activation_dropout", 0.0)
+        if activation_dropout == 0.0:
+            # for backwards compatibility with models that use args.relu_dropout
+            activation_dropout = getattr(args, "relu_dropout", 0.0)
+
+        return MaskedFeedForwardBlock(
+            embed_dim,
+            args.encoder_ffn_embed_dim,
+            args.encoder_ffn_modules,
+            activation_fn=activation_fn,
+            dropout=self.dropout,
+            activation_dropout=activation_dropout,
+            q_noise=self.quant_noise,
+            qn_block_size=quant_noise_block_size)
+
+    def build_ffn_controller(self, args):
+        return ModularCtrl(
+            args.encoder_embed_dim,
+            args.encoder_ffn_modules,
+            hidden_depth=args.module_ctrl_hidden_depth,
+            hidden_dim=args.module_ctrl_hidden_dim,
+            dropout=args.dropout,
+            word_dropout=args.module_ctrl_word_dropout,
+            hard_samples=args.module_ctrl_hard_samples,
+            add_output_bias=args.module_ctrl_add_output_bias,
+            averaged_tokens=args.module_ctrl_avg_tokens)
 
     def build_self_attention(self, embed_dim, args):
         return MaskedMultiheadAttention(
@@ -103,16 +141,16 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         # TODO: to formally solve this problem, we need to change fairseq's
         # MultiheadAttention. We will do this later on.
 
-        ctrl_out = None
+        ctrl_self_out = None
         self_mod_mask = module_mask
         if self_mod_mask is not None:
             self_mod_mask = self_mod_mask.view(1, 1, -1)
         elif self.ctrl_self is not None:
-            ctrl_out = self.ctrl_self(
+            ctrl_self_out = self.ctrl_self(
                 x,
                 encoder_padding_mask,
                 ctrl_temperature)
-            self_mod_mask = ctrl_out.mask
+            self_mod_mask = ctrl_self_out.mask
 
         x, attn_weights = self.self_attn(
             query=x, key=x, value=x, module_mask=self_mod_mask,
@@ -130,14 +168,25 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         if self.normalize_before:
             x = self.final_layer_norm(x)
 
-        x = self.activation_fn(self.fc1(x))
-        x = F.dropout(x, p=float(self.activation_dropout), training=self.training)
-        x = self.fc2(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        ctrl_ffn_out = None
+        ffn_mod_mask = module_mask
+        if ffn_mod_mask is not None:
+            ffn_mod_mask = ffn_mod_mask.view(1, 1, -1)
+        elif self.ctrl_ffn is not None:
+            ctrl_ffn_out = self.ctrl_ffn(
+                x,
+                encoder_padding_mask,
+                ctrl_temperature)
+            ffn_mod_mask = ctrl_ffn_out.mask
+
+        x = self.ffn(x, module_mask=ffn_mod_mask)
         x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
-        return x, attn_weights, ctrl_out
+        return (
+            x, attn_weights,
+            {"encoder_attn" : ctrl_self_out, "encoder_ffn": ctrl_ffn_out}
+        )
 
 
 class TransformerModularDecoderLayer(TransformerDecoderLayer):
@@ -155,8 +204,49 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
     ):
         super().__init__(args, no_encoder_attn, add_bias_kv, add_zero_attn)
-        self.ctrl_self = self.build_self_attn_controller(args)
-        self.ctrl_enc = self.build_encoder_attn_controller(args)
+        self.ctrl_ffn = None
+        if args.decoder_ffn_modules is not None:
+            self.ctrl_ffn = self.build_ffn_controller(args)
+
+        self.ctrl_self = None
+        if args.module_ctrl_decoder_attn:
+            self.ctrl_self = self.build_self_attn_controller(args)
+
+        self.ctrl_enc = None
+        if args.module_ctrl_encdec_attn
+            self.ctrl_enc = self.build_encoder_attn_controller(args)
+
+    def build_ffn(self, embed_dim, args):
+        activation_fn = utils.get_activation_fn(
+            activation=getattr(args, "activation_fn", "relu")
+        )
+
+        activation_dropout = getattr(args, "activation_dropout", 0.0)
+        if activation_dropout == 0.0:
+            # for backwards compatibility with models that use args.relu_dropout
+            activation_dropout = getattr(args, "relu_dropout", 0.0)
+
+        return MaskedFeedForwardBlock(
+            embed_dim,
+            args.decoder_ffn_embed_dim,
+            args.decoder_ffn_modules,
+            activation_fn=activation_fn,
+            dropout=self.dropout,
+            activation_dropout=activation_dropout,
+            q_noise=self.quant_noise,
+            qn_block_size=quant_noise_block_size)
+
+    def build_ffn_controller(self, args):
+        return ModularCtrl(
+            args.decoder_embed_dim,
+            args.decoder_ffn_modules,
+            hidden_depth=args.module_ctrl_hidden_depth,
+            hidden_dim=args.module_ctrl_hidden_dim,
+            dropout=args.dropout,
+            word_dropout=args.module_ctrl_word_dropout,
+            hard_samples=args.module_ctrl_hard_samples,
+            add_output_bias=args.module_ctrl_add_output_bias,
+            averaged_tokens=args.module_ctrl_avg_tokens)
 
     def build_self_attention(self,
                              embed_dim,
@@ -366,10 +456,20 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
         if self.normalize_before:
             x = self.final_layer_norm(x)
 
-        x = self.activation_fn(self.fc1(x))
-        x = F.dropout(x, p=float(self.activation_dropout), training=self.training)
-        x = self.fc2(x)
-        x = F.dropout(x, p=self.dropout, training=self.training)
+        ctrl_ffn_out = None
+        ffn_mod_mask = module_mask
+        if ffn_mod_mask is not None:
+            ffn_mod_mask = ffn_mod_mask.view(1, 1, -1)
+        elif self.ctrl_ffn is not None:
+            ctrl_ffn_out = self.ctrl_ffn(
+                x,
+                padding_mask=self_attn_padding_mask,
+                future_mask=self_attn_mask,
+                incremental_state=incremental_state,
+                temperature=ctrl_temperature)
+            ffn_mod_mask = ctrl_ffn_out.mask
+
+        x = self.ffn(x, module_mask=ffn_mod_mask)
         x = residual + x
         if not self.normalize_before:
             x = self.final_layer_norm(x)
@@ -386,11 +486,19 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                 self_attn_state = [saved_state["prev_key"], saved_state["prev_value"]]
             return (
                 x, attn_weights_self, attn_weights_enc, self_attn_state,
-                {"decoder": ctrl_self_out, "enc_dec": ctrl_enc_out}
+                {
+                    "decoder_attn": ctrl_self_out,
+                    "enc_dec_attn": ctrl_enc_out,
+                    "decoder_ffn": ctrl_ffn_out
+                }
             )
         return (
             x, attn_weights_self, attn_weights_enc, None,
-            {"decoder": ctrl_self_out, "enc_dec": ctrl_enc_out}
+            {
+                "decoder_attn": ctrl_self_out,
+                "enc_dec_attn": ctrl_enc_out,
+                "decoder_ffn": ctrl_ffn_out
+            }
         )
 
     @torch.jit.export
@@ -421,8 +529,8 @@ class MaskedFeedForwardBlock(FeedForwardBlock):
     def __init__(self,
                  embed_dim,
                  ffn_embed_dim,
-                 num_modules,
-                 activation_fn,
+                 num_modules=None,
+                 activation_fn=F.relu,
                  dropout=0.0,
                  activation_dropout=0.0,
                  bias=True,
@@ -437,8 +545,12 @@ class MaskedFeedForwardBlock(FeedForwardBlock):
             bias,
             q_noise,
             qn_block_size)
+        # HACK: without FFN controller (num_modules is None) we fall back
+        # to ``regular'' FFN block
+        self.num_modules = 1
+        if num_modules is not None:
+            self.num_modules = num_modules
 
-        self.num_modules = num_modules
         self.module_dim = ffn_embed_dim // num_modules
         assert (
             self.module_dim * num_modules == self.ffn_embed_dim
@@ -449,12 +561,13 @@ class MaskedFeedForwardBlock(FeedForwardBlock):
         x_proj = self.activation_fn(self.fc1(x))
         x_proj = F.dropout(x_proj, p=float(self.activation_dropout), training=self.training)
 
-        x_len, bsz, ffn_embed_dim = x_proj.size()
-        x_proj = x_proj.contiguous().view(x_len, bsz, self.num_modules, self.module_dim)
+        if module_mask is not None:
+            x_len, bsz, ffn_embed_dim = x_proj.size()
+            x_proj = x_proj.contiguous().view(x_len, bsz, self.num_modules, self.module_dim)
 
-        module_mask = module_mask.transpose(0, 1).unsqueeze(-1)
-        x_proj = x_proj * module_mask
-        x_proj = x_proj.view(x_len, bsz, self.ffn_embed_dim)
+            module_mask = module_mask.transpose(0, 1).unsqueeze(-1)
+            x_proj = x_proj * module_mask
+            x_proj = x_proj.view(x_len, bsz, self.ffn_embed_dim)
 
         y = self.fc2(x_proj)
         return F.dropout(y, p=self.dropout, training=self.training)
