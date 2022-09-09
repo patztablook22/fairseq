@@ -63,10 +63,10 @@ class TransformerModularModel(TransformerModel):
                             help='turn on modular decoder attention blocks')
         parser.add_argument('--module-ctrl-encdec-attn', action='store_true',
                             help='turn on modular enc-dec attention blocks')
-        parser.add_argument('--module-ctrl-encoder-ffn', action='store_true',
-                            help='turn on modular encoder ffn blocks')
-        parser.add_argument('--module-ctrl-decoder-ffn', action='store_true',
-                            help='turn on modular decoder ffn blocks')
+        parser.add_argument('--encoder-ffn-modules', type=int, default=None,
+                            help='turn on modular encoder ffn blocks (and how many there should be)')
+        parser.add_argument('--decoder-ffn-modules', type=int, default=None,
+                            help='turn on modular decoder ffn blocks (and how many there should be)')
         parser.add_argument('--module-ctrl-avg-tokens', action='store_true',
                             help='average controler input sequence')
         parser.add_argument('--module-ctrl-hard-samples', action='store_true',
@@ -520,8 +520,8 @@ def transformer_modular(args):
     args.module_ctrl_encoder_attn = getattr(args, 'module_ctrl_encoder_attn', False)
     args.module_ctrl_decoder_attn = getattr(args, 'module_ctrl_decoder_attn', False)
     args.module_ctrl_encdec_attn = getattr(args, 'module_ctrl_encdec_attn', False)
-    args.module_ctrl_encoder_ffn = getattr(args, 'module_ctrl_encoder_ffn', False)
-    args.module_ctrl_decoder_ffn = getattr(args, 'module_ctrl_decoder_ffn', False)
+    args.encoder_ffn_modules = getattr(args, 'encoder_ffn_modules', None)
+    args.decoder_ffn_modules = getattr(args, 'decoder_ffn_modules', None)
     args.module_ctrl_avg_tokens = getattr(args, 'module_ctrl_avg_tokens', False)
     args.module_ctrl_hard_samples = getattr(args, 'module_ctrl_hard_samples', False)
     args.module_ctrl_add_output_bias = getattr(args, 'module_ctrl_add_output_bias', False)
