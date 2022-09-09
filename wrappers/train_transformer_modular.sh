@@ -19,6 +19,7 @@ TGT=cs
 EMB_SIZE=128
 FFN_SIZE=$(expr 4 \* $EMB_SIZE)
 ATT_HEADS=8
+FFN_MODULES=$ATT_HEADS
 DEPTH=1
 SHARED_DICT_OPT=
 
@@ -55,7 +56,8 @@ MINIMIZE_METRIC="--maximize-best-checkpoint-metric"  # We want maximization to b
 EVAL_SCRIPT=process_checklist.sh
 
 # Modular Details
-CTRL_TYPE="attention"  # which modules are controlled (attention, ffn, TODO)
+CTRL_BLOCK="attn"  # which modules are controlled (attn, ffn, both)
+CTRL_CODER="both"  # which coders are controlled (encoder, decoder, both)
 CTRL_DEPTH=0
 CTRL_DIM=$EMB_SIZE
 CTRL_DROP=0.0
@@ -180,8 +182,16 @@ case $key in
         CTRL_DROP="$2"
         shift
     ;;
-    --ctrl-type)
-        CTRL_TYPE="$2"
+    --ctrl-block)
+        CTRL_BLOCK="$2"
+        shift
+    ;;
+    --ctrl-coder)
+        CTRL_CODER="$2"
+        shift
+    ;;
+    --ffn-modules)
+        FFN_MODULES="$2"
         shift
     ;;
     --ctrl-hard-samples)
@@ -311,9 +321,9 @@ MODEL_DIR="$MODEL_DIR.att-heads-$ATT_HEADS"
 MODEL_DIR="$MODEL_DIR.depth-$DEPTH"
 MODEL_DIR="$MODEL_DIR.smooth-$LABEL_SMOOTHING"
 MODEL_DIR="$MODEL_DIR.lr-$LR"
+MODEL_DIR="$MODEL_DIR.ctrl-$CTRL_BLOCK-$CTRL_CODER"
 #MODEL_DIR="$MODEL_DIR.ctrl-depth-$CTRL_DEPTH"
-#MODEL_DIR="$MODEL_DIR.max-tokens-$MAX_TOKENS"
-[[ -z "$RESET_OPTIMIZER_OPT" ]] || MODEL_DIR="$MODEL_DIR.reset-optim"
+#[[ -z "$RESET_OPTIMIZER_OPT" ]] || MODEL_DIR="$MODEL_DIR.reset-optim"
 [[ -z "$CTRL_AVG_TOKENS_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-avg-tokens"
 [[ -z "$CTRL_SAMPLING_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-hard-samples"
 MODEL_DIR="$MODEL_DIR.anneal-$CTRL_ANNEAL_TYPE"
@@ -328,6 +338,33 @@ MODEL_DIR="${MODEL_DIR}${EXP_SUFFIX}"
 mkdir $MODEL_DIR && mkdir $MODEL_DIR/checkpoints
 echo $TASKS | sed 's/ /->/g' > $MODEL_DIR/TASKS
 echo $FREEZE_PARAMS > $MODEL_DIR/FREEZE_PARAMS
+
+CTRL_CONTROL_OPT=""  # TODO: rewrite these conditions (as negation?)
+if [[ "$CTRL_BLOCK" == "attn" ]]; then
+    if [[ "$CTRL_CODER" == "encoder" ]]; then
+        CTRL_CONTROL_OPT="--module-ctrl-encoder-attn"
+    elif [[ "$CTRL_CODER" == "decoder" ]]; then
+        CTRL_CONTROL_OPT="--module-ctrl-decoder-attn --module-ctrl-encdec-attn"
+    else
+        CTRL_CONTROL_OPT="--module-ctrl-encoder-attn --module-ctrl-encdec-attn --module-ctrl-decoder-attn"
+    fi
+elif [[ "$CTRL_BLOCK" == "ffn" ]]; then
+    if [[ "$CTRL_CODER" == "encoder" ]]; then
+        CTRL_CONTROL_OPT="--encoder-ffn-modules $FFN_MODULES"
+    elif [[ "$CTRL_CODER" == "decoder" ]]; then
+        CTRL_CONTROL_OPT="--decoder-ffn-modules $FFN_MODULES"
+    else
+        CTRL_CONTROL_OPT="--encoder-ffn-modules $FFN_MODULES --decoder-ffn-modules $FFN_MODULES"
+    fi
+else
+    if [[ "$CTRL_CODER" == "encoder" ]]; then
+        CTRL_CONTROL_OPT="--module-ctrl-encoder-attn --encoder-ffn-modules $FFN_MODULES"
+    elif [[ "$CTRL_CODER" == "decoder" ]]; then
+        CTRL_CONTROL_OPT="--module-ctrl-decoder-attn --module-ctrl-encdec-attn --decoder-ffn-modules $FFN_MODULES"
+    else
+        CTRL_CONTROL_OPT="--module-ctrl-encoder-attn --module-ctrl-encdec-attn --module-ctrl-decoder-attn --encoder-ffn-modules $FFN_MODULES --decoder-ffn-modules $FFN_MODULES"
+    fi
+then
 
 ckpt_opt=
 [[ -e "$INIT_CKPT" ]] && ckpt_opt="--restore-file $INIT_CKPT" && cp $INIT_CKPT $MODEL_DIR/checkpoints/checkpoint_last.pt
@@ -412,6 +449,7 @@ for current_task in $TASKS; do
                 --module-kl-div-regularizer-weight $CTRL_KL_DIV_WEIGHT \
                 --module-budget-regularizer-ratio $CTRL_BUDGET_RATIO \
                 --module-budget-regularizer-weight $CTRL_BUDGET_WEIGHT \
+                $CTRL_CONTROL_OPT \
                 $PARAM_FREEZE_OPT \
                 --save-interval-updates $SAVE_EVERY_N_UPDATES")
 
