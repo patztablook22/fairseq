@@ -59,7 +59,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             dropout=self.dropout,
             activation_dropout=activation_dropout,
             q_noise=self.quant_noise,
-            qn_block_size=quant_noise_block_size)
+            qn_block_size=self.quant_noise_block_size)
 
     def build_ffn_controller(self, args):
         return ModularCtrl(
@@ -213,7 +213,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             self.ctrl_self = self.build_self_attn_controller(args)
 
         self.ctrl_enc = None
-        if args.module_ctrl_encdec_attn
+        if args.module_ctrl_encdec_attn:
             self.ctrl_enc = self.build_encoder_attn_controller(args)
 
     def build_ffn(self, embed_dim, args):
@@ -234,7 +234,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             dropout=self.dropout,
             activation_dropout=activation_dropout,
             q_noise=self.quant_noise,
-            qn_block_size=quant_noise_block_size)
+            qn_block_size=self.quant_noise_block_size)
 
     def build_ffn_controller(self, args):
         return ModularCtrl(
@@ -551,9 +551,9 @@ class MaskedFeedForwardBlock(FeedForwardBlock):
         if num_modules is not None:
             self.num_modules = num_modules
 
-        self.module_dim = ffn_embed_dim // num_modules
+        self.module_dim = ffn_embed_dim // self.num_modules
         assert (
-            self.module_dim * num_modules == self.ffn_embed_dim
+            self.module_dim * self.num_modules == self.ffn_embed_dim
         ), "ffn_embed_dim must be divisible by num_modules"
 
     def forward(self, x, module_mask: Tensor) -> Tensor:
