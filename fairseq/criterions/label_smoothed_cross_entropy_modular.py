@@ -19,9 +19,13 @@ _EPS = 1e-9
 
 # TODO: review this and indicate this in TB
 def selection_entropy(controllers):
-    return torch.stack([
+    entropies = [
         Bernoulli(logits=ctrl.logits).entropy() for ctrl in controllers
-        if ctrl is not None], axis=0).mean()
+        if ctrl is not None]
+
+    if entropies:
+        return torch.stack(entropies, axis=0).mean()
+    return torch.tensor(0.)
 
 
 # TODO: review this and indicate this in TB
@@ -31,9 +35,13 @@ def batch_selection_entropy(controllers):
         probs = torch.stack([probs, 1 - probs], 0)
         return (-probs * torch.log(probs + _EPS)).sum(0)
 
-    return torch.stack([
+    entropies = [
         layer_entropy(ctrl) for ctrl in controllers
-        if ctrl is not None]).mean()
+        if ctrl is not None]
+
+    if entropies:
+        return torch.stack(entropies, axis=0).mean()
+    return torch.tensor(0.)
 
 
 def compute_masked_ratio(controllers):
@@ -46,7 +54,7 @@ def compute_masked_ratio(controllers):
 
         assert res.dim() == 1
         return res
-    return torch.tensor([0.])
+    return torch.tensor(0.)
 
 
 def compute_masked_budget(controllers, mask_budget):
@@ -61,7 +69,7 @@ def compute_masked_budget(controllers, mask_budget):
 
         assert res.dim() == 1
         return torch.sqrt((res - mask_budget)**2)
-    return torch.tensor([0.])
+    return torch.tensor(0.)
 
 
 def compute_kl_div(controllers, q):

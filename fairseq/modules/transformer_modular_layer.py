@@ -586,7 +586,7 @@ class MaskedFeedForwardBlock(FeedForwardBlock):
         self.num_modules = num_modules
         self.module_dim = ffn_embed_dim // num_modules
         assert (
-            self.module_dim * num_modules == self.ffn_embed_dim
+            self.module_dim * self.num_modules == self.ffn_embed_dim
         ), "ffn_embed_dim must be divisible by num_modules"
 
     def forward(self, x, module_mask: Tensor) -> Tensor:
