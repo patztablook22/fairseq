@@ -56,8 +56,8 @@ MINIMIZE_METRIC="--maximize-best-checkpoint-metric"  # We want maximization to b
 EVAL_SCRIPT=process_checklist.sh
 
 # Modular Details
-CTRL_BLOCK="attn"  # which modules are controlled (attn, ffn, both)
-CTRL_CODER="both"  # which coders are controlled (encoder, decoder, both)
+CTRL_BLOCK="attn"  # which modules are controlled (attn, ffn, all)
+CTRL_CODER="both"  # which coders are controlled (encoder, decoder, all)
 CTRL_DEPTH=0
 CTRL_DIM=$EMB_SIZE
 CTRL_DROP=0.0
@@ -345,7 +345,7 @@ if [[ "$CTRL_BLOCK" == "attn" ]]; then
         CTRL_CONTROL_OPT="--module-ctrl-encoder-attn"
     elif [[ "$CTRL_CODER" == "decoder" ]]; then
         CTRL_CONTROL_OPT="--module-ctrl-decoder-attn --module-ctrl-encdec-attn"
-    else
+    elif [[ "$CTRL_CODER" == "all" ]]; then
         CTRL_CONTROL_OPT="--module-ctrl-encoder-attn --module-ctrl-encdec-attn --module-ctrl-decoder-attn"
     fi
 elif [[ "$CTRL_BLOCK" == "ffn" ]]; then
@@ -353,18 +353,18 @@ elif [[ "$CTRL_BLOCK" == "ffn" ]]; then
         CTRL_CONTROL_OPT="--encoder-ffn-modules $FFN_MODULES"
     elif [[ "$CTRL_CODER" == "decoder" ]]; then
         CTRL_CONTROL_OPT="--decoder-ffn-modules $FFN_MODULES"
-    else
+    elif [[ "$CTRL_CODER" == "all" ]]; then
         CTRL_CONTROL_OPT="--encoder-ffn-modules $FFN_MODULES --decoder-ffn-modules $FFN_MODULES"
     fi
-else
+elif [[ "$CTRL_BLOCK" == "all" ]]; then
     if [[ "$CTRL_CODER" == "encoder" ]]; then
         CTRL_CONTROL_OPT="--module-ctrl-encoder-attn --encoder-ffn-modules $FFN_MODULES"
     elif [[ "$CTRL_CODER" == "decoder" ]]; then
         CTRL_CONTROL_OPT="--module-ctrl-decoder-attn --module-ctrl-encdec-attn --decoder-ffn-modules $FFN_MODULES"
-    else
+    elif [[ "$CTRL_CODER" == "all" ]]; then
         CTRL_CONTROL_OPT="--module-ctrl-encoder-attn --module-ctrl-encdec-attn --module-ctrl-decoder-attn --encoder-ffn-modules $FFN_MODULES --decoder-ffn-modules $FFN_MODULES"
     fi
-then
+fi
 
 ckpt_opt=
 [[ -e "$INIT_CKPT" ]] && ckpt_opt="--restore-file $INIT_CKPT" && cp $INIT_CKPT $MODEL_DIR/checkpoints/checkpoint_last.pt

@@ -245,6 +245,7 @@ class TransformerModularEncoder(TransformerEncoder):
         encoder_states = [] if return_all_hiddens else None
         attn_weights = []
         enc_ctrl_outputs = []
+        ffn_ctrl_outputs = []
 
         # encoder layers
         for layer in self.layers:
@@ -252,7 +253,8 @@ class TransformerModularEncoder(TransformerEncoder):
                 x, module_mask, encoder_padding_mask,
                 need_head_weights=True, ctrl_temperature=ctrl_temperature)
             attn_weights.append(attn_w)
-            enc_ctrl_outputs.append(ctrl_out)
+            enc_ctrl_outputs.append(ctrl_out["encoder_attn"])
+            ffn_ctrl_outputs.append(ctrl_out["encoder_ffn"])
             if return_all_hiddens:
                 assert encoder_states is not None
                 encoder_states.append(x)
@@ -268,7 +270,10 @@ class TransformerModularEncoder(TransformerEncoder):
             enc_self_attn_weights=attn_weights,
             src_tokens=None,
             src_lengths=None,
-            ctrl_outputs={ 'encoder': enc_ctrl_outputs },
+            ctrl_outputs={
+                'encoder_attn': enc_ctrl_outputs,
+                'encoder_ffn': ffn_ctrl_outputs
+            },
         )
 
     @torch.jit.export
@@ -438,11 +443,10 @@ class TransformerModularDecoder(TransformerDecoder):
 
         self_attn_weights = []
         enc_attn_weights = []
-        self_ctrl_outputs = []
-        enc_ctrl_outputs = []
 
         self_ctrl_outputs = []
         enc_ctrl_outputs = []
+        ffn_ctrl_outputs = []
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -476,8 +480,9 @@ class TransformerModularDecoder(TransformerDecoder):
             self_attn_weights.append(self_attn)
             enc_attn_weights.append(enc_attn)
 
-            self_ctrl_outputs.append(ctrl_out['decoder'])
-            enc_ctrl_outputs.append(ctrl_out['enc_dec'])
+            self_ctrl_outputs.append(ctrl_out['decoder_attn'])
+            enc_ctrl_outputs.append(ctrl_out['enc_dec_attn'])
+            ffn_ctrl_outputs.append(ctrl_out['decoder_ffn'])
 
             inner_states.append(x)
             if enc_attn is not None and idx == alignment_layer:
@@ -508,8 +513,9 @@ class TransformerModularDecoder(TransformerDecoder):
             "attn_weights": attn_weights,
             "inner_states": inner_states,
             "ctrl_outputs": {
-                "decoder": self_ctrl_outputs,
-                "enc_dec": enc_ctrl_outputs,
+                "decoder_attn": self_ctrl_outputs,
+                "enc_dec_attn": enc_ctrl_outputs,
+                "decoder_ffn": ffn_ctrl_outputs,
             },
         }
 

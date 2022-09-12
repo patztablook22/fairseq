@@ -59,7 +59,7 @@ class TransformerEncoderLayer(nn.Module):
             dropout=self.dropout,
             activation_dropout=activation_dropout,
             q_noise=self.quant_noise,
-            qn_block_size=quant_noise_block_size)
+            qn_block_size=self.quant_noise_block_size)
 
     def build_self_attention(self, embed_dim, args):
         return MultiheadAttention(
@@ -216,7 +216,7 @@ class TransformerDecoderLayer(nn.Module):
             dropout=self.dropout,
             activation_dropout=activation_dropout,
             q_noise=self.quant_noise,
-            qn_block_size=quant_noise_block_size)
+            qn_block_size=self.quant_noise_block_size)
 
     def build_self_attention(self, embed_dim, args, add_bias_kv=False, add_zero_attn=False):
         return MultiheadAttention(
