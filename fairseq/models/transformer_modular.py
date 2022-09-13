@@ -54,8 +54,6 @@ class TransformerModularModel(TransformerModel):
         """Add model-specific arguments to the parser."""
         # fmt: off
         super(TransformerModularModel, TransformerModularModel).add_args(parser)
-        parser.add_argument('--module-ctrl-type', type=str,
-                            help='type of TransformerModular layer to be used')
         # TODO: switch the modularity in a more sophisticated way
         parser.add_argument('--module-ctrl-encoder-attn', action='store_true',
                             help='turn on modular encoder attention blocks')
@@ -524,7 +522,6 @@ class TransformerModularDecoder(TransformerDecoder):
 
 @register_model_architecture("transformer_modular", "transformer_modular")
 def transformer_modular(args):
-    args.module_ctrl_type = getattr(args, 'module_ctrl_type', 'attention')
     args.module_ctrl_encoder_attn = getattr(args, 'module_ctrl_encoder_attn', False)
     args.module_ctrl_decoder_attn = getattr(args, 'module_ctrl_decoder_attn', False)
     args.module_ctrl_encdec_attn = getattr(args, 'module_ctrl_encdec_attn', False)

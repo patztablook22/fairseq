@@ -143,14 +143,15 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
 
         ctrl_self_out = None
         self_mod_mask = module_mask
-        if self_mod_mask is not None:
-            self_mod_mask = self_mod_mask.view(1, 1, -1)
-        elif self.ctrl_self is not None:
-            ctrl_self_out = self.ctrl_self(
-                x,
-                encoder_padding_mask,
-                ctrl_temperature)
-            self_mod_mask = ctrl_self_out.mask
+        if self.ctrl_self is not None:
+            if self_mod_mask is not None:
+                self_mod_mask = self_mod_mask.view(1, 1, -1)
+            else:
+                ctrl_self_out = self.ctrl_self(
+                    x,
+                    encoder_padding_mask,
+                    ctrl_temperature)
+                self_mod_mask = ctrl_self_out.mask
 
         x, attn_weights = self.self_attn(
             query=x, key=x, value=x, module_mask=self_mod_mask,
@@ -170,14 +171,15 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
 
         ctrl_ffn_out = None
         ffn_mod_mask = module_mask
-        if ffn_mod_mask is not None:
-            ffn_mod_mask = ffn_mod_mask.view(1, 1, -1)
-        elif self.ctrl_ffn is not None:
-            ctrl_ffn_out = self.ctrl_ffn(
-                x,
-                encoder_padding_mask,
-                ctrl_temperature)
-            ffn_mod_mask = ctrl_ffn_out.mask
+        if self.ctrl_ffn is not None:
+            if ffn_mod_mask is not None:
+                ffn_mod_mask = ffn_mod_mask.view(1, 1, -1)
+            else:
+                ctrl_ffn_out = self.ctrl_ffn(
+                    x,
+                    encoder_padding_mask,
+                    ctrl_temperature)
+                ffn_mod_mask = ctrl_ffn_out.mask
 
         x = self.ffn(x, module_mask=ffn_mod_mask)
         x = residual + x
@@ -381,16 +383,17 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
 
         ctrl_self_out = None
         self_mod_mask = module_mask
-        if self_mod_mask is not None:
-            self_mod_mask = self_mod_mask.view(1, 1, -1)
-        elif self.ctrl_self is not None:
-            ctrl_self_out = self.ctrl_self(
-                x,
-                padding_mask=self_attn_padding_mask,
-                future_mask=self_attn_mask,
-                incremental_state=incremental_state,
-                temperature=ctrl_temperature)
-            self_mod_mask = ctrl_self_out.mask
+        if self.ctrl_self is not None:
+            if self_mod_mask is not None:
+                self_mod_mask = self_mod_mask.view(1, 1, -1)
+            else:
+                ctrl_self_out = self.ctrl_self(
+                    x,
+                    padding_mask=self_attn_padding_mask,
+                    future_mask=self_attn_mask,
+                    incremental_state=incremental_state,
+                    temperature=ctrl_temperature)
+                self_mod_mask = ctrl_self_out.mask
 
         x, attn_weights_self = self.self_attn(
             query=x,
@@ -425,16 +428,17 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
 
             ctrl_enc_out = None
             enc_mod_mask = module_mask
-            if enc_mod_mask is not None:
-                enc_mod_mask = enc_mod_mask.view(1, 1, -1)
-            elif self.ctrl_enc is not None:
-                ctrl_enc_out = self.ctrl_enc(
-                    x,
-                    padding_mask=self_attn_padding_mask,
-                    future_mask=self_attn_mask,
-                    incremental_state=incremental_state,
-                    temperature=ctrl_temperature)
-                enc_mod_mask = ctrl_enc_out.mask
+            if self.ctrl_enc is not None:
+                if enc_mod_mask is not None:
+                    enc_mod_mask = enc_mod_mask.view(1, 1, -1)
+                else:
+                    ctrl_enc_out = self.ctrl_enc(
+                        x,
+                        padding_mask=self_attn_padding_mask,
+                        future_mask=self_attn_mask,
+                        incremental_state=incremental_state,
+                        temperature=ctrl_temperature)
+                    enc_mod_mask = ctrl_enc_out.mask
 
             x, attn_weights_enc = self.encoder_attn(
                 query=x,
@@ -458,16 +462,17 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
 
         ctrl_ffn_out = None
         ffn_mod_mask = module_mask
-        if ffn_mod_mask is not None:
-            ffn_mod_mask = ffn_mod_mask.view(1, 1, -1)
-        elif self.ctrl_ffn is not None:
-            ctrl_ffn_out = self.ctrl_ffn(
-                x,
-                padding_mask=self_attn_padding_mask,
-                future_mask=self_attn_mask,
-                incremental_state=incremental_state,
-                temperature=ctrl_temperature)
-            ffn_mod_mask = ctrl_ffn_out.mask
+        if self.ctrl_ffn is not None:
+            if ffn_mod_mask is not None:
+                ffn_mod_mask = ffn_mod_mask.view(1, 1, -1)
+            else:
+                ctrl_ffn_out = self.ctrl_ffn(
+                    x,
+                    padding_mask=self_attn_padding_mask,
+                    future_mask=self_attn_mask,
+                    incremental_state=incremental_state,
+                    temperature=ctrl_temperature)
+                ffn_mod_mask = ctrl_ffn_out.mask
 
         x = self.ffn(x, module_mask=ffn_mod_mask)
         x = residual + x
