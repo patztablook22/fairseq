@@ -902,7 +902,8 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
         super().__init__(EnsembleModelWithModuleMask(models), tgt_dict, **kwargs)
         self.left_pad_target = False
 
-        self.ctrl_keys = ['encoder', 'decoder', 'enc_dec']
+        # TODO: this needs to be gathered from the model itself
+        self.ctrl_keys = ['encoder_attn', 'decoder_attn', 'enc_dec_attn', 'encoder_ffn', 'decoder_ffn']
 
     @torch.no_grad()
     def generate(self, models, sample, **kwargs):

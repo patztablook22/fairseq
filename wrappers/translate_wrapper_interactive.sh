@@ -13,7 +13,7 @@ LP=${6:-0.6}
 #CKPT_ID="1"
 
 INPUT_PATH=$EXPDIR/../data
-RESULTS_FILE=$EXPDIR/$PREFIX.${CKPT_ID##"_"}.txt
+RESULTS_FILE=$PREFIX.${CKPT_ID##"_"}.txt
 CKPT=$EXPDIR/checkpoints/checkpoint$CKPT_ID.pt
 
 cat /dev/stdin | python interactive.py \

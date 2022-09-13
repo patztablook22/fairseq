@@ -12,41 +12,66 @@ from torch.distributions.bernoulli import Bernoulli
 from fairseq import metrics, utils
 from fairseq.criterions import FairseqCriterion, register_criterion
 from fairseq.criterions.label_smoothed_cross_entropy import LabelSmoothedCrossEntropyCriterion
+from fairseq.modules import ModularCtrl
 
 
 _EPS = 1e-9
 
 
-# TODO: review this and indicate this in TB
 def selection_entropy(controllers):
     entropies = [
-        Bernoulli(logits=ctrl.logits).entropy() for ctrl in controllers
-        if ctrl is not None]
+        ModularCtrl._mask_output_probs(
+            Bernoulli(logits=ctrl.logits).entropy(), ctrl.padding_mask
+        ) for ctrl in controllers if ctrl is not None
+    ]
+    n_all = [
+        ModularCtrl._mask_output_probs(
+            torch.ones_like(ctrl.logits), ctrl.padding_mask
+        ) for ctrl in controllers if ctrl is not None
+    ]
 
     if entropies:
-        return torch.stack(entropies, axis=0).mean()
+        return torch.stack(entropies, axis=0).sum() / torch.stack(n_all, axis=0).sum()
     return torch.tensor(0.)
 
 
-# TODO: review this and indicate this in TB
 def batch_selection_entropy(controllers):
     def layer_entropy(layer_ctrl):
-        probs = Bernoulli(logits=layer_ctrl.logits).probs.mean(0)
-        probs = torch.stack([probs, 1 - probs], 0)
-        return (-probs * torch.log(probs + _EPS)).sum(0)
+        probs = ModularCtrl._mask_output_probs(
+            Bernoulli(logits=layer_ctrl.logits).probs, layer_ctrl.padding_mask)
+        n_all = ModularCtrl._mask_output_probs(
+            torch.ones_like(layer_ctrl.logits), layer_ctrl.padding_mask)
+        probs = probs.sum(0) / n_all.sum(0)
+        probs = torch.stack([probs, 1 - probs], -1)
+        return (-probs * torch.log(probs + _EPS)).sum(-1)
 
     entropies = [
-        layer_entropy(ctrl) for ctrl in controllers
-        if ctrl is not None]
+        ModularCtrl._mask_output_probs(
+            layer_entropy(ctrl),
+            (ctrl.padding_mask.all(0) if ctrl.padding_mask is not None else None)
+        ) for ctrl in controllers if ctrl is not None
+    ]
+    n_all = [
+        ModularCtrl._mask_output_probs(
+            torch.ones_like(ctrl.logits[0]),
+            (ctrl.padding_mask.all(0) if ctrl.padding_mask is not None else None)
+        ) for ctrl in controllers if ctrl is not None
+    ]
 
     if entropies:
-        return torch.stack(entropies, axis=0).mean()
+        return torch.stack(entropies, axis=0).sum() / torch.stack(n_all, axis=0).sum()
     return torch.tensor(0.)
 
 
 def compute_masked_ratio(controllers):
-    n_masked = [ctrl.mask.sum([-2, -1]) for ctrl in controllers if ctrl is not None]
-    n_all = [(ctrl.sampled_probs > 0).sum([-2, -1]) for ctrl in controllers if ctrl is not None]
+    n_masked = [
+        ModularCtrl._mask_output_probs(ctrl.mask, ctrl.padding_mask).sum([-2, -1])
+        for ctrl in controllers if ctrl is not None
+    ]
+    n_all = [
+        ModularCtrl._mask_output_probs(torch.ones_like(ctrl.mask), ctrl.padding_mask).sum([-2, -1])
+        for ctrl in controllers if ctrl is not None
+    ]
     if n_all:
         n_masked = torch.stack(n_masked, 0).sum(0)
         n_all = torch.stack(n_all, 0).sum(0)
@@ -59,29 +84,34 @@ def compute_masked_ratio(controllers):
 
 def compute_masked_budget(controllers, mask_budget):
     assert 0. <= mask_budget <= 1.
-
-    n_masked = [ctrl.sampled_probs.sum([-2, -1]) for ctrl in controllers if ctrl is not None]
-    n_all = [(ctrl.sampled_probs > 0).sum([-2, -1]) for ctrl in controllers if ctrl is not None]
+    n_masked = [
+        ModularCtrl._mask_output_probs(ctrl.mask, ctrl.padding_mask).sum([-2, -1])
+        for ctrl in controllers if ctrl is not None
+    ]
+    n_all = [
+        ModularCtrl._mask_output_probs(torch.ones_like(ctrl.mask), ctrl.padding_mask).sum([-2, -1])
+        for ctrl in controllers if ctrl is not None
+    ]
     if n_all:
         n_masked = torch.stack(n_masked, 0).sum(0)
         n_all = torch.stack(n_all, 0).sum(0)
         res = n_masked / (n_all + _EPS)
 
         assert res.dim() == 1
-        return torch.sqrt((res - mask_budget)**2)
+        return torch.sqrt((res - mask_budget)**2 + _EPS)  # EPS for numerical stability
     return torch.tensor(0.)
 
 
 def compute_kl_div(controllers, q):
-    probs = [
-        torch.sigmoid(ctrl.logits)
-        for ctrl in controllers if ctrl is not None
-    ]
-    if not probs:
-        return torch.tensor(0.)
-    probs = torch.cat(probs, dim=1)
+    res = []
+    for ctrl in controllers:
+        if ctrl is None:
+            continue
+        probs = torch.sigmoid(ctrl.logits)
+        kl_div = -(q * torch.log(probs + _EPS) + (1 - q) * torch.log(1 - probs + _EPS))
+        res.append(ModularCtrl._mask_output_probs(kl_div, ctrl.padding_mask))
 
-    res = -(q * torch.log(probs + _EPS) + (1 - q) * torch.log(1 - probs + _EPS))
+    res = torch.cat(res, dim=1)
     res = res.sum([-2, -1])
 
     assert res.dim() == 1
@@ -291,7 +321,7 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
 
         metrics.log_scalar('loss', loss_sum / sample_size / math.log(2), sample_size, round=3)
         metrics.log_scalar('nll_loss', nll_loss_sum / ntokens / math.log(2), ntokens, round=3)
-        metrics.log_scalar('module_KL_div', kl_div_sum / nsentences, nsentences, round=3)
+        metrics.log_scalar('module_KL_div', kl_div_sum / ntokens, ntokens, round=3)
         metrics.log_scalar('module_mask_budget', mask_budget_sum / nsentences, nsentences, round=3)
         metrics.log_scalar('module_mask_ratio', mask_ratio_sum / nsentences, nsentences, round=3)
         metrics.log_scalar('sel_entropy', sel_entropy, 1, round=3)

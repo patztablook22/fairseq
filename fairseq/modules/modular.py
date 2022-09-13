@@ -57,6 +57,7 @@ ModularCtrlOut = NamedTuple(
         ("logits", Tensor),
         ("sampled_probs", Tensor),
         ("mask", Tensor),
+        ("padding_mask", Tensor),
     ]
 )
 
@@ -171,7 +172,8 @@ class ModularCtrl(nn.Module):
                 logits: mask logits of `(batch, seq_len, n_modules)` or `(batch, 1, n_modules)`
                 sampled_probs: probability of the positive mask value based from logits (+ sampled noise during
                     training), same shape as logits
-                module_mask: hard-thresholded sampled_probs (same shape as logits)
+                mask: hard-thresholded sampled_probs (same shape as logits)
+                padding_mask: used for masking padded positions
         """
         x = x.transpose(0, 1)
 
@@ -239,7 +241,8 @@ class ModularCtrl(nn.Module):
         return ModularCtrlOut(
             logits=logits,
             sampled_probs=sampled_probs,
-            mask=module_mask
+            mask=module_mask,
+            padding_mask=padding_mask
         )
 
     @staticmethod
