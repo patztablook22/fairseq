@@ -376,8 +376,18 @@ for current_task in $TASKS; do
     # We freeze the parameters only after finishing the training of the first task
     PARAM_FREEZE_OPT=
     if [[ -e "$MODEL_DIR/checkpoints/checkpoint_last.pt" ]] || [[ -e "$INIT_CKPT" ]]; then
-        [[ -n "$FREEZE_PARAMS" ]] && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
+        # the (global) --freeze-params opt can be overwritten by task-specific freeze-params
+        if [[ -e "$EXPDIR/data/${current_task}.freeze" ]]; then
+            PARAM_FREEZE_OPT="--parameter-freeze-substr '`cat $EXPDIR/data/${current_task}.freeze`'"
+        elif [[ -n "$FREEZE_PARAMS" ]]; then
+            PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
+        fi
     fi
+
+    # Read task-specific fixed controller mask (if available)
+    CTRL_FIXED_MASK_OPT=
+    [[ -e "$EXPDIR/data/${current_task}.mask" ]] \
+        && CTRL_FIXED_MASK_OPT="--module-ctrl-fixed-mask '`cat $EXPDIR/data/${current_task}.mask`'"
 
     jid=$(qsubmit \
         --queue="gpu-troja.q" \
@@ -450,6 +460,7 @@ for current_task in $TASKS; do
                 --module-budget-regularizer-ratio $CTRL_BUDGET_RATIO \
                 --module-budget-regularizer-weight $CTRL_BUDGET_WEIGHT \
                 $CTRL_CONTROL_OPT \
+                $CTRL_FIXED_MASK_OPT \
                 $PARAM_FREEZE_OPT \
                 --save-interval-updates $SAVE_EVERY_N_UPDATES")
 
