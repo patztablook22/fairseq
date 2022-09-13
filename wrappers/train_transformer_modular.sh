@@ -476,7 +476,7 @@ for current_task in $TASKS; do
             --tasks "`echo $VALID_TASKS | sed 's/\.[^. ]* / /;s/\.[^. ]*$//'`" \
             --eval-dir $EVAL_DIR \
             --eval-prefix "$t" \
-            --translation-options '--print-module-mask --print-module-probs' \
+            --translation-options '--print-module-mask --print-module-probs' 2>&1 \
         | tee -a $MODEL_DIR/logs/$current_task.eval.log &
     done
 

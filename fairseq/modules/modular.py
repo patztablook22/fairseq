@@ -160,7 +160,8 @@ class ModularCtrl(FairseqIncrementalDecoder):
                 logits: mask logits of `(batch, seq_len, n_modules)` or `(batch, 1, n_modules)`
                 sampled_probs: probability of the positive mask value based from logits (+ sampled noise during
                     training), same shape as logits
-                module_mask: hard-thresholded sampled_probs (same shape as logits)
+                mask: hard-thresholded sampled_probs (same shape as logits)
+                padding_mask: used for masking padded positions
         """
         x = x.transpose(0, 1)
 
