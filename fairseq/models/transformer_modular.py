@@ -329,10 +329,12 @@ class TransformerModularEncoder(TransformerEncoder):
                     new_logits = ctrl_out.logits.index_select(0, new_order)
                     new_sampled_probs = ctrl_out.sampled_probs.index_select(0, new_order)
                     new_mask = ctrl_out.mask.index_select(0, new_order)
+                    new_padding_mask = ctrl_out.padding_mask.index_select(0, new_order)
                     new_ctrl_out = ModularCtrlOut(
                         logits=new_logits,
                         sampled_probs=new_sampled_probs,
-                        mask=new_mask
+                        mask=new_mask,
+                        padding_mask=new_padding_mask
                     )
                     new_ctrl_outputs[key].append(new_ctrl_out)
 

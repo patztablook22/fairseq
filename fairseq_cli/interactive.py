@@ -222,7 +222,7 @@ def main(args):
                 # TODO: get the mask keys directly from the model
                 for key in hypo:
                     if "_mask" in key:
-                        print('M{}-{}\t{}'.format(key, id, hypo[key]))
+                        print('M-{}-{}\t{}'.format(key, id, hypo[key]))
                 # TODO: get the mask keys directly from the model
                 for key in hypo:
                     if "_probs" in key:
