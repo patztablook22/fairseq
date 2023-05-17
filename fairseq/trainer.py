@@ -253,8 +253,10 @@ class Trainer(object):
             state = checkpoint_utils.load_checkpoint_to_cpu(filename)
 
             # Remove EWC-related values from state_dict to avoid RuntimeError during loading
-            state_model = {n: p for n, p in state["model"].items() if "__" not in n}
-
+            state_model = {
+                n: p for n, p in state["model"].items()
+                if "__" not in n and n != 'fisher_n_samples'
+            }
 
             # load model parameters
             try:

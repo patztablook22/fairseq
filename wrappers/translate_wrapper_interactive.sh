@@ -14,9 +14,9 @@ INPUT_PATH=$EXPDIR/../data
 RESULTS_FILE=$PREFIX.${CKPT_ID##"_"}.txt
 CKPT=$EXPDIR/checkpoints/checkpoint$CKPT_ID.pt
 
+#cat /dev/stdin | cuda-memcheck python interactive.py \
 cat /dev/stdin | python interactive.py \
     $INPUT_PATH \
     --path $CKPT \
-    --remove-bpe \
     --buffer-size 500 \
     $OPTS | tee $RESULTS_FILE

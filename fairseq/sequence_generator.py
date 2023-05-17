@@ -375,7 +375,6 @@ class SequenceGenerator(nn.Module):
                 cand_bbsz_idx = cand_beams.add(bbsz_offsets)
                 cand_scores = cand_scores[batch_idxs]
                 cand_indices = cand_indices[batch_idxs]
-                eos_lprobs = eos_lprobs[batch_idxs]
 
                 if prefix_tokens is not None:
                     prefix_tokens = prefix_tokens[batch_idxs]
@@ -384,6 +383,7 @@ class SequenceGenerator(nn.Module):
 
                 scores = scores.view(bsz, -1)[batch_idxs].view(new_bsz * beam_size, -1)
                 tokens = tokens.view(bsz, -1)[batch_idxs].view(new_bsz * beam_size, -1)
+                eos_lprobs = eos_lprobs.view(bsz, -1)[batch_idxs].view(new_bsz * beam_size, -1)
                 if attn is not None:
                     attn = attn.view(bsz, -1)[batch_idxs].view(
                         new_bsz * beam_size, attn.size(1), -1
@@ -432,6 +432,14 @@ class SequenceGenerator(nn.Module):
                 )
             scores.view(bsz, beam_size, -1)[:, :, step] = torch.gather(
                 cand_scores, dim=1, index=active_hypos
+            )
+
+            # copy eos_lprobs for active hypothese
+            eos_lprobs[:, : step + 1] = torch.index_select(
+                eos_lprobs[:, : step + 1], dim=0, index=active_bbsz_idx
+            )
+            eos_lprobs.view(bsz, beam_size, -1)[:, :, step + 1] = torch.gather(
+                cand_indices, dim=1, index=active_hypos
             )
 
             # copy attention for active hypotheses

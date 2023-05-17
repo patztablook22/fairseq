@@ -38,8 +38,6 @@ def compute_ewc(model, device, ewc_lambda, term_type="original"):
     ewc_sum = torch.tensor(0.).to(device)
     found_fisher = False  # Sanity check (mainly for debugging)
 
-    logs = {}
-
     for n, p in model.named_parameters():
         n_orig = n
         n = n.replace('.', '__')
@@ -59,23 +57,10 @@ def compute_ewc(model, device, ewc_lambda, term_type="original"):
         else:
             raise ValueError("Wrong ewc_term_type")
 
-        # logging
-        fisher_argmax = fisher.argmax()
-        logs["{}.max".format(n_orig)] = (p - mean).view(-1)[fisher_argmax]
-        logs["{}__max".format(n)] = fisher.max()
-
-        fisher_argmin = fisher.argmin()
-        logs["{}.min".format(n_orig)] = (p - mean).view(-1)[fisher_argmin]
-        logs["{}__min".format(n)] = fisher.min()
-
-        fisher_argmedian = fisher.view(-1).argsort()[int(fisher.numel() / 2)]
-        logs["{}.median".format(n_orig)] = (p - mean).view(-1)[fisher_argmedian]
-        logs["{}__median".format(n)] = fisher.view(-1)[fisher_argmedian]
-
     if model.training and not found_fisher:
         logger.warning("Computing EWC although model does not "
                        "contain any weight consolidation info.")
-    return ewc_sum, logs
+    return ewc_sum
 
 
 @register_criterion('label_smoothed_cross_entropy')
@@ -109,13 +94,12 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         3) logging outputs to display while training
         """
         net_output = model(**sample['net_input'])
-        loss, nll_loss, ewc_loss, ewc_logs = self.compute_loss(model, net_output, sample, reduce=reduce)
+        loss, nll_loss, ewc_loss = self.compute_loss(model, net_output, sample, reduce=reduce)
         sample_size = sample['target'].size(0) if self.sentence_avg else sample['ntokens']
         logging_output = {
             'loss': loss.data,
             'ewc_loss': ewc_loss.data,
             'nll_loss': nll_loss.data,
-            'ewc_logs': ewc_logs,
             'ewc_lambda': self.ewc_lambda,
             'ntokens': sample['ntokens'],
             'nsentences': sample['target'].size(0),
@@ -132,18 +116,17 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         )
 
         ewc_loss = torch.tensor(0.).to(loss.device)
-        ewc_logs = {}
         if self.ewc_lambda is not None and self.ewc_lambda != 0.:
             sample_size = sample['target'].size(0) if self.sentence_avg else sample['ntokens']
 
-            # Compute the Regularizer loss and upscale it by sample size so
-            # it's not batch-size independent. The gradients are later
+            # Compute the Regularizer loss and upscale it by sample size
+            # making it batch-size independent. The gradients are later
             # normalized by sample_size in fairseq.trainer.
-            ewc_loss, ewc_logs = compute_ewc(model, loss.device, self.ewc_lambda, term_type=self.ewc_term_type)
+            ewc_loss = compute_ewc(model, loss.device, self.ewc_lambda, term_type=self.ewc_term_type)
             ewc_loss *= sample_size
             loss += (self.ewc_lambda / 2) * ewc_loss
 
-        return loss, nll_loss, ewc_loss, ewc_logs
+        return loss, nll_loss, ewc_loss
 
     @staticmethod
     def reduce_metrics(logging_outputs) -> None:
@@ -159,12 +142,6 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         metrics.log_scalar('nll_loss', nll_loss_sum / ntokens / math.log(2), ntokens, round=3)
         metrics.log_derived('ppl', lambda meters: utils.get_perplexity(meters['nll_loss'].avg))
 
-        # EWC monitoring
-        ewc_logs = logging_outputs[0].get('ewc_logs', {})
-        for k in [k for k in ewc_logs.keys() if "__" not in k]:
-            metrics.log_scalar(k, ewc_logs[k], 1, round=5)
-
-        ewc_lambda = logging_outputs[0].get('ewc_lambda', 1.)
         metrics.log_scalar('ewc_loss', (ewc_loss_sum * ewc_lambda) / sample_size / math.log(2), 1, round=5)
 
     @staticmethod

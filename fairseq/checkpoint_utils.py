@@ -203,7 +203,10 @@ def load_model_ensemble_and_task(filenames, arg_overrides=None, task=None, stric
         state = load_checkpoint_to_cpu(filename, arg_overrides)
 
         # Remove EWC-related values from state_dict to avoid RuntimeError during loading
-        state_model = {n: p for n, p in state["model"].items() if "__" not in n}
+        state_model = {
+            n: p for n, p in state["model"].items()
+            if "__" not in n and n != "fisher_n_samples"
+        }
 
         args = state["args"]
         if task is None:

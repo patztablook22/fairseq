@@ -9,7 +9,7 @@ def compute_accuracy(hyps, refs):
     for h, r in zip(hyps, refs):
         if h == r:
             acc += 1.0
-    return acc * 100 / float(len(refs))
+    return acc / float(len(refs))
 
 
 def main():

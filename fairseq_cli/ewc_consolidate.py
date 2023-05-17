@@ -72,9 +72,9 @@ def make_batches(lines, args, task, max_positions, encode_fn):
     )
     itr = task.get_batch_iterator(
         dataset=dataset,
-        max_tokens=args.max_tokens,
-        max_sentences=args.max_sentences,
-        max_positions=max_positions,
+        max_tokens=None,
+        max_sentences=1,
+        max_positions=None,
         ignore_invalid_inputs=args.skip_invalid_size_inputs_valid_test
     ).next_epoch_itr(shuffle=False)
     for batch in itr:
@@ -102,6 +102,7 @@ def main(args):
     extra_state, epoch_itr = checkpoint_utils.load_checkpoint(train_args, trainer)
     # TODO: avoid loading the training dataset OR compute FI by subsampling
     #       from training dataset
+    train_args.save_dir = os.path.dirname(args.path)  # HACK: we want to save the checkpoint 
 
     # Set dictionaries
     src_dict = task.source_dictionary
@@ -135,42 +136,57 @@ def main(args):
     n_samples = 0
     model.eval()  # Using eval() mode to disable dropout
     model.zero_grad()
+    fisher_diag = [0. for _, p in model.named_parameters() if p.requires_grad]
     for inputs in buffered_read(args.input, args.buffer_size):
         for sample in make_batches(inputs, args, task, max_positions, encode_fn):
             sample = utils.move_to_cuda(sample) if use_cuda else sample
 
             # Perform train step to get loss to compute gradients
+            model.zero_grad()
             loss, _, _ = criterion(model, sample)
+
             if args.ewc_normalize == "tokens":
-                sample_size = sample['ntokens']
+                loss = loss / sample['ntokens']
             elif args.ewc_normalize == "sentences":
-                sample_size = sample['target'].size(0)
-            elif args.ewc_normalize == "batches":
-                sample_size = 1
+                pass
+            elif args.ewc_normalize == "max":
+                pass
+            elif args.ewc_normalize == "unit":
+                pass
             else:
                 raise ValueError("unkown option")
-            n_samples += sample_size
+            n_samples += 1
 
             # Accumulate gradients
             loss.backward()
+            fisher_diag = [
+                f + (p.grad.data.clone() ** 2)
+                for ((_, p), f) in zip(model.named_parameters(), fisher_diag)
+                if p.requires_grad
+            ]
 
     # Average gradients and compute fisher diagonal
-    #fisher_diagonals = [(p.grad / n_samples) ** 2 for n, p in model.named_parameters()]
-    # TODO: Should we also compute FI for parameters that are "frozen"?
-    fisher_diagonals = [(p.grad ** 2) / n_samples for n, p in model.named_parameters() if p.grad is not None]
+    if args.ewc_normalize == "max":
+        fisher_max = torch.cat([f.view(-1) for f in fisher_diag]).max()
+        fisher_diag = [f / fisher_max for f in fisher_diag]
+    elif args.ewc_normalize == "unit":
+        fisher_trace = torch.cat([f.view(-1) for f in fisher_diag]).sum()
+        fisher_diag = [f / fisher_trace for f in fisher_diag]
+    else:
+        fisher_diag = [f / n_samples for f in fisher_diag]
 
     param_names = [
-        n.replace('.', '__') for n, p in model.named_parameters() if p.grad is not None
+        n.replace('.', '__') for n, p in model.named_parameters() if p.requires_grad
     ]
-    fisher = {n: f.detach() for n, f in zip(param_names, fisher_diagonals)}
+    fisher_diag_dict = {n: f.detach() for n, f in zip(param_names, fisher_diag)}
 
     # Consolidate
     for n, p in model.named_parameters():
-        if p.grad is None:
+        if p.requires_grad is None:
             continue
         n = n.replace('.', '__')
         model.register_buffer('{}_mean'.format(n), p.data.clone())
-        model.register_buffer('{}_fisher'.format(n), fisher[n].data.clone())
+        model.register_buffer('{}_fisher'.format(n), fisher_diag_dict[n].data.clone())
 
     # Save
     # HACK: We want to make epoch_itr.end_of_epoch method callable without raising error

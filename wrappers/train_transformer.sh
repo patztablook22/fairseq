@@ -1,8 +1,16 @@
 #~/bin/bash
 set -e
 
-JOB_PRIORITY=-90
+JOB_PRIORITY=10
+SLURM_CONSTRAINTS=
+EXCLUDE_NODES="dll-10gpu1,dll-10gpu2,dll-10gpu3"
+SLURM_SUBMIT="/home/varis/scripts/slurm-submit.sh"
+
+VIRTUALENV="/home/varis/python-virtualenv/fairseq-env/bin/activate"
+CORES=4
+MEM="25g"
 GPUMEM="11g"
+GPUS=1
 
 EXPDIR=
 EVAL_DIR=
@@ -20,6 +28,7 @@ FFN_SIZE=$(expr 4 \* $EMB_SIZE)
 ATT_HEADS=8
 DEPTH=6
 SHARED_DICT_OPT=
+TIE_DECODER_OPT=
 
 # Training Reset
 INIT_CKPT=
@@ -27,11 +36,12 @@ RESET_OPTIMIZER_OPT=
 
 # Training Details
 RANDOM_SEED=42
-INITIAL_EPOCH=0  # used with initial checkpoint (which have non-zero epoch number)
-EPOCHS=100
+N_UPDATES=0
+INITIAL_UPDATE=0  # used with initial checkpoint (which have non-zero epoch number)
+UPDATE_OPT="--max-update"
 LABEL_SMOOTHING=0.1
 MAX_TOKENS=4096
-DROPOUT=0.3
+DROPOUT=0.2
 LR="5e-4"
 WARMUP=4000
 CLIP_NORM=0.0
@@ -61,6 +71,8 @@ EWC_NORM="tokens"  # tokens, sentences, batches
 
 # Parameter freeze (for consecutive tasks)
 FREEZE_PARAMS=
+
+OPTS="$*"  # Save script parameters for rerun...
 
 HELP=1
 while [[ $# -gt 0 ]]; do
@@ -94,12 +106,15 @@ case $key in
         VALID_TASKS="$2"
         shift
     ;;
-    --epochs)
-        EPOCHS="$2"
+    --max-updates)
+        N_UPDATES="$2"
         shift
     ;;
-    --initial-epoch)
-        INITIAL_EPOCH="$2"
+    --epochs-not-updates)
+        UPDATE_OPT="--max-epoch"
+    ;;
+    --initial-update)
+        INITIAL_UPDATE="$2"
         shift
     ;;
     --emb-size)
@@ -116,6 +131,10 @@ case $key in
     ;;
     --depth)
         DEPTH="$2"
+        shift
+    ;;
+    --dropout)
+        DROPOUT="$2"
         shift
     ;;
     --lr|--learning-rate)
@@ -212,6 +231,9 @@ case $key in
     --reset-optimizer)
         RESET_OPTIMIZER_OPT="--reset-optimizer"
     ;;
+    --tie-decoder-output)
+        TIE_DECODER_OPT="--share-decoder-input-output-embed"
+    ;;
     --shared-dict)
         SHARED_DICT_OPT="--share-all-embeddings"
     ;;
@@ -230,7 +252,6 @@ done
 
 [[ -d "$EXPDIR" ]] || exit 1
 [[ -d "$EVAL_DIR" ]] || exit 1
-
 # TODO: print help
 
 MODEL_DIR="$EXPDIR/transformer"
@@ -250,30 +271,38 @@ MODEL_DIR="$MODEL_DIR.lr-$LR"
 
 [[ -d $MODEL_DIR ]] && rm -r $MODEL_DIR
 mkdir $MODEL_DIR && mkdir $MODEL_DIR/checkpoints
+echo $OPTS > $MODEL_DIR/CMD_ARGS
 echo $TASKS | sed 's/ /->/g' > $MODEL_DIR/TASKS
 echo $FREEZE_PARAMS > $MODEL_DIR/FREEZE_PARAMS
 
 ckpt_opt=
-[[ -e "$INIT_CKPT" ]] && ckpt_opt="--restore-file $INIT_CKPT" && cp $INIT_CKPT $MODEL_DIR/checkpoints/checkpoint_last.pt
-epochs=`expr $INITIAL_EPOCH + $EPOCHS`
+[[ -e "$INIT_CKPT" ]] && cp $INIT_CKPT $MODEL_DIR/checkpoints/checkpoint_last.pt && ckpt_opt="--restore-file $MODEL_DIR/checkpoints/checkpoint_last.pt"
+
+update_opt=""
+n_updates=0
+if [[ $PATIENCE -eq 0 ]]; then
+    n_updates=`expr $INITIAL_UPDATE + $N_UPDATES`
+    update_opt="$UPDATE_OPT $n_updates"
+fi
+
 valid_sets=`echo $VALID_TASKS | sed 's/ /.valid,/g;s/$/.valid/'`
 for current_task in $TASKS; do
     echo Training $current_task...
 
-     PARAM_FREEZE_OPT=
+    PARAM_FREEZE_OPT=
     if [[ -e "$MODEL_DIR/checkpoints/checkpoint_last.pt" ]] || [[ -e "$INIT_CKPT" ]]; then
         [[ -n $FREEZE_PARAMS ]] && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
     fi
 
-    jid=$(qsubmit \
-        --queue="gpu-troja.q" \
-        --logdir=$MODEL_DIR/logs \
-        --jobname=$current_task.train \
-        --mem=25g \
-        --cores=4 \
-        --gpumem=$GPUMEM \
-        --priority=$JOB_PRIORITY \
-        --gpus=1 "source $HOME/python-virtualenv/fairseq-env/bin/activate && \
+    jid=$($SLURM_SUBMIT \
+        --jobname "$current_task.train" \
+        --constraints "$SLURM_CONSTRAINTS" \
+        --exclude "$EXCLUDE_NODES" \
+        --logdir "$MODEL_DIR/logs" \
+        --gpus $GPUS \
+        --mem $GPUMEM \
+        --cores $CORES \
+        --priority $JOB_PRIORITY "source $VIRTUALENV && \
             export CUDA_LAUNCH_BLOCKING=1 && \
             python train.py \
                 $EXPDIR/data \
@@ -282,17 +311,18 @@ for current_task in $TASKS; do
                 --seed $RANDOM_SEED \
                 --task translation \
                 --arch transformer \
-                --share-decoder-input-output-embed \
+                $TIE_DECODER_OPT \
                 $SHARED_DICT_OPT \
                 --train-subset ${current_task}.train \
                 --valid-subset $valid_sets \
                 $ckpt_opt \
                 $RESET_OPTIMIZER_OPT \
+                --num-workers 0 \
                 --optimizer adam \
                 --adam-betas '($ADAM_BETA_1, $ADAM_BETA_2)' \
                 --clip-norm $CLIP_NORM \
                 --patience $PATIENCE \
-                --max-epoch $epochs \
+                $update_opt \
                 --lr $LR \
                 --lr-scheduler inverse_sqrt \
                 --warmup-updates $WARMUP \
@@ -324,26 +354,32 @@ for current_task in $TASKS; do
                 $PARAM_FREEZE_OPT \
                 --save-interval-updates $SAVE_EVERY_N_UPDATES")
 
-    jid=`echo $jid | cut -d" " -f3`
+    jid=`echo $jid | cut -d" " -f4`
     echo Waiting for $jid...
     while true; do
         sleep 15
-        qstat | grep $jid > /dev/null || break
+        #qstat | grep $jid > /dev/null || break
+        squeue | grep " $jid " > /dev/null || break
     done
+
+    if [[ $PATIENCE -gt 0 ]]; then
+        cp $MODEL_DIR/checkpoints/checkpoint_best.pt \
+            $MODEL_DIR/checkpoints/checkpoint_last.pt
+    fi
 
     # Consolidate (EWC)
     if [[ "$EWC_LAMBDA" != "0." ]]; then
         # TODO: Use valid data or a sample of train?
         echo "$EWC_LAMBDA != 0. => consolidating weights..."
-        jid=$(qsubmit \
-            --queue="gpu-troja.q" \
-            --logdir=$MODEL_DIR/logs \
-            --jobname=$current_task.consolidate \
-            --mem=25g \
-            --cores=4 \
-            --gpumem=$GPUMEM \
-            --priority=$JOB_PRIORITY \
-            --gpus=1 "source $HOME/python-virtualenv/fairseq-env/bin/activate && \
+        jid=$($SLURM_SUBMIT \
+            --jobname "$current_task.consolidate" \
+            --constraints "$SLURM_CONSTRAINTS" \
+            --exclude "$EXCLUDE_NODES" \
+            --logdir "$MODEL_DIR/logs" \
+            --gpus $GPUS \
+            --mem $GPUMEM \
+            --cores $CORES \
+            --priority $JOB_PRIORITY "source $HOME/python-virtualenv/fairseq-env/bin/activate && \
                 export CUDA_LAUNCH_BLOCKING=1 && \
                 python ewc_consolidate.py \
                     $EXPDIR/data \
@@ -353,13 +389,14 @@ for current_task in $TASKS; do
                     --path $MODEL_DIR/checkpoints/checkpoint_last.pt \
                     --ewc-normalize $EWC_NORM \
                     --buffer-size 100")
-
-        jid=`echo $jid | cut -d" " -f3`
+        jid=`echo $jid | cut -d" " -f4`
         echo Waiting for $jid...
         while true; do
             sleep 15
-            qstat | grep $jid > /dev/null || break
+            #qstat | grep $jid > /dev/null || break
+            squeue | grep " $jid " > /dev/null || break
         done
+
     fi
 
     # Save the last ckpt for current task and set it as initial
@@ -370,17 +407,22 @@ for current_task in $TASKS; do
 
     # Validate
     echo "Validating using $EVAL_SCRIPT..."
-    for t in valid test; do
+    for t in test; do
         bash $EVAL_SCRIPT \
-            -t $current_task \
+            -t best \
             --src $SRC \
             --tgt $TGT \
             --expdir $MODEL_DIR \
-            --tasks "`echo $VALID_TASKS | sed 's/\.[^. ]* / /g;s/\.[^. ]*$//'`" \
+            --beam-size $VALID_BEAM_SIZE \
+            --lenpen $VALID_LENPEN \
+            --tasks "`echo $VALID_TASKS | sed 's/bpe.//g'`" \
             --eval-dir $EVAL_DIR \
-            --eval-prefix "$t" \
+            --eval-prefix "$t" 2>&1 \
         | tee -a $MODEL_DIR/logs/$current_task.eval.log &
     done
 
-    epochs=`expr $epochs + $EPOCHS`
+    if [[ $PATIENCE -eq 0 ]]; then
+        n_updates=`expr $n_updates + $N_UPDATES`
+        update_opt="$UPDATE_OPT $n_updates"
+    fi
 done
