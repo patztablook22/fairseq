@@ -16,6 +16,7 @@ import sys
 import time
 from argparse import Namespace
 from collections import namedtuple
+import re
 
 import numpy as np
 import torch
@@ -176,7 +177,12 @@ def main(cfg: FairseqConfig):
         if tokenizer is not None:
             x = tokenizer.encode(x)
         if bpe is not None:
-            x = bpe.encode(x)
+            # HACK: protect __${LANGID}__ from BPE tokenization
+            x_arr = x.split(" ")
+            if re.search("^__..__$", x_arr[0]) is not None:
+                x = " ".join([x_arr[0], bpe.encode(" ".join(x_arr[1:]))])
+            else:
+                x = bpe.encode(x)
         return x
 
     def decode_fn(x):

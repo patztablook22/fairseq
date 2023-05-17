@@ -552,6 +552,9 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
         if self.ctrl_enc is not None:
             self.ctrl_enc.reorder_incremental_state(incremental_state, new_order)
 
+        if self.ctrl_ffn is not None:
+            self.ctrl_ffn.reorder_incremental_state(incremental_state, new_order)
+
 
 class MaskedFeedForwardBlock(FeedForwardBlock):
     """
