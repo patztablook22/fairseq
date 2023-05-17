@@ -31,7 +31,7 @@ def selection_entropy(controllers):
     ]
 
     if entropies:
-        return torch.stack(entropies, axis=0).sum() / torch.stack(n_all, axis=0).sum()
+        return torch.cat(entropies, axis=1).sum() / torch.cat(n_all, axis=1).sum()
     return torch.tensor(0.)
 
 
@@ -59,7 +59,7 @@ def batch_selection_entropy(controllers):
     ]
 
     if entropies:
-        return torch.stack(entropies, axis=0).sum() / torch.stack(n_all, axis=0).sum()
+        return torch.cat(entropies, axis=0).sum() / torch.cat(n_all, axis=0).sum()
     return torch.tensor(0.)
 
 
@@ -73,8 +73,8 @@ def compute_masked_ratio(controllers):
         for ctrl in controllers if ctrl is not None
     ]
     if n_all:
-        n_masked = torch.stack(n_masked, 0).sum(0)
-        n_all = torch.stack(n_all, 0).sum(0)
+        n_masked = torch.stack(n_masked, 1).sum(1)
+        n_all = torch.stack(n_all, 1).sum(1)
         res = n_masked / (n_all + _EPS)
 
         assert res.dim() == 1
@@ -93,8 +93,8 @@ def compute_masked_budget(controllers, mask_budget):
         for ctrl in controllers if ctrl is not None
     ]
     if n_all:
-        n_masked = torch.stack(n_masked, 0).sum(0)
-        n_all = torch.stack(n_all, 0).sum(0)
+        n_masked = torch.stack(n_masked, 1).sum(1)
+        n_all = torch.stack(n_all, 1).sum(1)
         res = n_masked / (n_all + _EPS)
 
         assert res.dim() == 1
@@ -111,11 +111,13 @@ def compute_kl_div(controllers, q):
         kl_div = -(q * torch.log(probs + _EPS) + (1 - q) * torch.log(1 - probs + _EPS))
         res.append(ModularCtrl._mask_output_probs(kl_div, ctrl.padding_mask))
 
-    res = torch.cat(res, dim=1)
-    res = res.sum([-2, -1])
+    if res:
+        res = torch.cat(res, dim=1)
+        res = res.sum([-2, -1])
 
-    assert res.dim() == 1
-    return res
+        assert res.dim() == 1
+        return res
+    return torch.tensor(0.)
 
 
 def label_smoothed_nll_loss(lprobs, target, epsilon, ignore_index=None, reduce=True):

@@ -908,7 +908,6 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
     @torch.no_grad()
     def generate(self, models, sample, **kwargs):
         self.model.reset_incremental_state()
-
         finalized = super()._generate(sample, **kwargs)
 
         src_tokens = sample["net_input"]["src_tokens"]

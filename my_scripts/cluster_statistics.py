@@ -61,7 +61,6 @@ def main(args):
                 ct[x, y] += 1
             contingency_tables["{}-{}".format(i, j)] = ct
 
-    import pdb; pdb.set_trace()
     overlap = None
     for k in same_cluster:
         if same_cluster[k].shape[0] == 0:

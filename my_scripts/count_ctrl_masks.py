@@ -22,20 +22,24 @@ def update_counts(ctrl_outputs,
                   inputs=None,
                   count_isolated_modules=True):
     for k, v in ctrl_outputs.items():
-        counts = update("{}:n_all".format(k), v.shape[0], counts)
+        counts = update("n_all", v.shape[0], counts)
         
         # Use dummy inputs if not provided by the user
         if inputs is None:
             inputs = ["XXX" for _ in range(v.shape[0])]
         for x_in in inputs:
-            counts = update("{}:{}".format(k, x_in), 1, counts)
+            counts = update("{}".format(x_in), 1, counts)
 
-        for ctrl_out, x_in in zip(v, inputs):
+        for pos, (ctrl_out, x_in) in enumerate(zip(v, inputs)):
             if count_isolated_modules:
                 for i in range(ctrl_out.shape[0]):
+                    counts = update("{}:{}:n_all".format(k, i), ctrl_out[i], counts)
                     counts = update("{}:{}:{}".format(k, i, x_in), ctrl_out[i], counts)
+                    counts = update("{}:{}:{}:{}".format(k, i, x_in, pos), ctrl_out[i], counts)
             else:
+                counts = update("{}:{}:n_all".format(k, "".join(ctrl_out.astype(np.str))), 1, counts)
                 counts = update("{}:{}:{}".format(k, "".join(ctrl_out.astype(np.str)), x_in), 1, counts)
+                counts = update("{}:{}:{}:{}".format(k, "".join(ctrl_out.astype(np.str)), x_in, pos), 1, counts)
     return counts
 
         

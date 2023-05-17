@@ -142,8 +142,9 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
         # MultiheadAttention. We will do this later on.
 
         ctrl_self_out = None
-        self_mod_mask = module_mask
+        self_mod_mask = None
         if self.ctrl_self is not None:
+            self_mod_mask = module_mask
             if self_mod_mask is not None:
                 self_mod_mask = self_mod_mask.view(1, 1, -1)
             else:
@@ -170,8 +171,9 @@ class TransformerModularEncoderLayer(TransformerEncoderLayer):
             x = self.final_layer_norm(x)
 
         ctrl_ffn_out = None
-        ffn_mod_mask = module_mask
+        ffn_mod_mask = None
         if self.ctrl_ffn is not None:
+            ffn_mod_mask = module_mask
             if ffn_mod_mask is not None:
                 ffn_mod_mask = ffn_mod_mask.view(1, 1, -1)
             else:
@@ -382,8 +384,9 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             y = x
 
         ctrl_self_out = None
-        self_mod_mask = module_mask
+        self_mod_mask = None
         if self.ctrl_self is not None:
+            self_mod_mask = module_mask
             if self_mod_mask is not None:
                 self_mod_mask = self_mod_mask.view(1, 1, -1)
             else:
@@ -427,8 +430,9 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
 
             ctrl_enc_out = None
-            enc_mod_mask = module_mask
+            enc_mod_mask = None
             if self.ctrl_enc is not None:
+                enc_mod_mask = module_mask
                 if enc_mod_mask is not None:
                     enc_mod_mask = enc_mod_mask.view(1, 1, -1)
                 else:
@@ -461,8 +465,9 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
             x = self.final_layer_norm(x)
 
         ctrl_ffn_out = None
-        ffn_mod_mask = module_mask
+        ffn_mod_mask = None
         if self.ctrl_ffn is not None:
+            ffn_mod_mask = module_mask
             if ffn_mod_mask is not None:
                 ffn_mod_mask = ffn_mod_mask.view(1, 1, -1)
             else:
@@ -523,6 +528,9 @@ class TransformerModularDecoderLayer(TransformerDecoderLayer):
 
         if self.ctrl_enc is not None:
             self.ctrl_enc.reorder_incremental_state(incremental_state, new_order)
+
+        if self.ctrl_ffn is not None:
+            self.ctrl_ffn.reorder_incremental_state(incremental_state, new_order)
 
 
 class MaskedFeedForwardBlock(FeedForwardBlock):
