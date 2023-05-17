@@ -133,8 +133,8 @@ experimental/*
 
 # (varisd) Custom ignores
 .qsubmit*
+.slurm*
 experiments/*
 examples/*
-custom_examples/*
 logs/*
 monitoring/*

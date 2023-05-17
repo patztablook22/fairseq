@@ -139,7 +139,7 @@ class ModularCtrl(nn.Module):
                 torch.ones(input_mask.shape, device=x.device) * (1. - self.word_dropout))
 
         if self.averaged_tokens:
-            if future_mask is not None:
+            if future_mask is not None and future_mask.shape:
                 future_mask = future_mask.reshape(1, x_len, x_len, 1)
                 x *= input_mask.float()
                 x = x.unsqueeze(1).repeat([1, x_len, 1, 1])
