@@ -3,7 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
 from torch import Tensor
@@ -12,13 +12,17 @@ import logging
 
 from fairseq.dataclass.utils import gen_parser_from_dataclass
 from fairseq.distributed import fsdp_wrap
+from fairseq.models import register_model
 from fairseq.models.transformer import (
-    TransformerConfig,
+    TransformerModularConfig,
+    TransformerModelBase,
     TransformerDecoderBase,
     TransformerEncoderBase,
 )
+from fairseq.modules import transformer_modular_layer
 
 
+@register_model("transformer_modular", dataclass=TransformerModularConfig)
 class TransformerModularModel(TransformerModelBase):
     """
     Transformer architecture with an additional conditional computation support.
@@ -36,20 +40,13 @@ class TransformerModularModel(TransformerModelBase):
         :ref: fairseq.models.transformer_parser
         :prog:
     """
-
-    def __init__(self, cfg, encoder, decoder):
-        super().__init__(cfg, encoder, decoder)
-        self.cfg = cfg
-        self.supports_align_args = True
-
     @classmethod
     def add_args(cls, parser):
         """Add model-specific arguments to the parser."""
         # we want to build the args recursively in this case.
         gen_parser_from_dataclass(
-            parser, TransformerConfig(), delete_default=False, with_prefix=""
+            parser, TransformerModularConfig(), delete_default=False, with_prefix=""
         )
-        # TODO: add arguments
 
     @classmethod
     def build_encoder(cls, cfg, src_dict, embed_tokens):
@@ -119,7 +116,7 @@ class TransformerModularEncoder(TransformerEncoderBase):
         embed_tokens (torch.nn.Embedding): input embedding
     """
     def build_encoder_layer(self, cfg):
-        layer = transformer_layer.TransformeModularEncoderLayer(
+        layer = transformer_modular_layer.TransformerModularEncoderLayer(
             cfg, return_fc=self.return_fc
         )
         checkpoint = cfg.checkpoint_activations
@@ -167,7 +164,7 @@ class TransformerModularEncoder(TransformerEncoderBase):
                 - **encoder_states** (List[Tensor]): all intermediate
                   hidden states of shape `(src_len, batch, embed_dim)`.
                   Only populated if *return_all_hiddens* is True.
-                - **ctrl_outputs** (Dict[str, Dict[str, Tensor]]): outputs from
+                - **ctrl_outputs** (Dict[str, List[Dict[str, Tensor]]]): outputs from
                   the individual module controllers
         """
         return self.forward_scriptable(
@@ -218,7 +215,7 @@ class TransformerModularEncoder(TransformerEncoderBase):
                 - **encoder_states** (List[Tensor]): all intermediate
                   hidden states of shape `(src_len, batch, embed_dim)`.
                   Only populated if *return_all_hiddens* is True.
-                - **ctrl_outputs** (Dict[str, Dict[str, Tensor]]): outputs from
+                - **ctrl_outputs** (Dict[str, List[Dict[str, Tensor]]]): outputs from
                   the individual module controllers
         """
         # compute padding mask
@@ -241,7 +238,8 @@ class TransformerModularEncoder(TransformerEncoderBase):
         x = x.transpose(0, 1)
 
         encoder_states = []
-        enc_ctrl_outputs = []
+        attn_ctrl_outputs = []
+        ffn_ctrl_outputs = []
         fc_results = []
 
         if return_all_hiddens:
@@ -251,7 +249,7 @@ class TransformerModularEncoder(TransformerEncoderBase):
         for layer in self.layers:
             lr = layer(
                 x,
-                encoder_padding_mask=encoder_padding_mask if has_pads else None
+                encoder_padding_mask=encoder_padding_mask if has_pads else None,
                 need_head_weights=False,
                 module_mask=module_mask,
                 ctrl_temperature=ctrl_temperature,
@@ -263,7 +261,8 @@ class TransformerModularEncoder(TransformerEncoderBase):
                 x, ctrl_out = lr
                 fc_result = None
 
-            enc_ctrl_outputs.append(ctrl_out)
+            attn_ctrl_outputs.append(ctrl_out["encoder_attn"])
+            ffn_ctrl_outputs.append(ctrl_out["encoder_ffn"])
             if return_all_hiddens and not torch.jit.is_scripting():
                 assert encoder_states is not None
                 encoder_states.append(x)
@@ -290,7 +289,11 @@ class TransformerModularEncoder(TransformerEncoderBase):
             "fc_results": fc_results,  # List[T x B x C]
             "src_tokens": [],
             "src_lengths": [src_lengths],
-            "ctrl_outputs": { "encoder": enc_ctrl_outputs },
+            "ctrl_outputs": {
+                "encoder_attn": attn_ctrl_outputs,
+                "encoder_ffn": ffn_ctrl_outputs,
+
+            },
         }
 
     @torch.jit.export
@@ -346,12 +349,16 @@ class TransformerModularEncoder(TransformerEncoderBase):
                     new_ctrl_outputs[key].append(ctrl_out)
                 else:
                     new_logits = ctrl_out["logits"].index_select(0, new_order)
-                    new_sampled_probs = ctrl_out["samples_probs"].index_select(0, new_order)
+                    new_sampled_probs = ctrl_out["sampled_probs"].index_select(0, new_order)
                     new_mask = ctrl_out["mask"].index_select(0, new_order)
-                    new_ctrl_outputs.append({
+                    new_padding_mask = None
+                    if ctrl_out["padding_mask"] is not None:
+                        new_padding_mask = ctrl_out["padding_mask"].index_select(0, new_order)
+                    new_ctrl_outputs[key].append({
                         "logits": new_logits,
-                        "samples_probs": new_sampled_probs,
+                        "sampled_probs": new_sampled_probs,
                         "mask": new_mask,
+                        "padding_mask": new_padding_mask,
                     })
 
         return {
@@ -379,7 +386,9 @@ class TransformerModularDecoder(TransformerDecoderBase):
             (default: False).
     """
     def build_decoder_layer(self, cfg, no_encoder_attn=False):
-        layer = transformer_layer.TransformerModularDecoderLayer(cfg, no_encoder_attn)
+        layer = transformer_modular_layer.TransformerModularDecoderLayer(
+            cfg, no_encoder_attn
+        )
         checkpoint = cfg.checkpoint_activations
         if checkpoint:
             offload_to_cpu = cfg.offload_activations
@@ -545,8 +554,9 @@ class TransformerModularDecoder(TransformerDecoderBase):
 
         x = self.dropout_module(x)
 
-        self_ctrl_outputs = []
-        enc_ctrl_outputs = []
+        self_attn_ctrl_outputs = []
+        encdec_attn_ctrl_outputs = []
+        ffn_ctrl_outputs = []
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
@@ -564,7 +574,7 @@ class TransformerModularDecoder(TransformerDecoderBase):
             else:
                 self_attn_mask = None
 
-            x, layer_attn, _, _, ctrl_out = layer(
+            x, layer_attn, _, ctrl_out = layer(
                 x,
                 enc,
                 padding_mask,
@@ -577,8 +587,9 @@ class TransformerModularDecoder(TransformerDecoderBase):
                 ctrl_temperature=ctrl_temperature,
             )
 
-            self_ctrl_outputs.append(ctrl_out["decoder"])
-            enc_ctrl_outputs.append(ctrl_out["enc_dec"])
+            self_attn_ctrl_outputs.append(ctrl_out["decoder_attn"])
+            encdec_attn_ctrl_outputs.append(ctrl_out["encdec_attn"])
+            ffn_ctrl_outputs.append(ctrl_out["decoder_ffn"])
 
             inner_states.append(x)
             if layer_attn is not None and idx == alignment_layer:
@@ -604,7 +615,9 @@ class TransformerModularDecoder(TransformerDecoderBase):
             "attn": [attn],
             "inner_states": inner_states,
             "ctrl_outputs": {
-                "decoder": self_ctrl_outputs,
-                "enc_dec": enc_ctrl_outputs,
+                "decoder_attn": self_attn_ctrl_outputs,
+                "encdec_attn": encdec_attn_ctrl_outputs,
+                "decoder_ffn": ffn_ctrl_outputs,
+
             },
         }

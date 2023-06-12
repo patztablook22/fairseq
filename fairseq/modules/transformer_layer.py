@@ -10,10 +10,8 @@ import torch.nn as nn
 from torch import Tensor
 
 from fairseq import utils
-from fairseq.models.transformer import TransformerConfig
-from fairseq.modules import LayerNorm, MultiheadAttention
+from fairseq.modules import FeedForwardBlock, LayerNorm, MultiheadAttention
 from fairseq.modules.fairseq_dropout import FairseqDropout
-from fairseq.modules.quant_noise import quant_noise
 
 
 class TransformerEncoderLayerBase(nn.Module):
@@ -43,6 +41,11 @@ class TransformerEncoderLayerBase(nn.Module):
         self.dropout_module = FairseqDropout(
             cfg.dropout, module_name=self.__class__.__name__
         )
+
+        self.activation_fn = utils.get_activation_fn(
+            activation=cfg.activation_fn
+        )
+
         self.normalize_before = cfg.encoder.normalize_before
         self.ffn = self.build_ffn(self.embed_dim, cfg)
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
@@ -54,8 +57,6 @@ class TransformerEncoderLayerBase(nn.Module):
         return self.ffn._prune_fc_layer(remove_index)
 
     def build_ffn(self, embed_dim, cfg):
-        activation_fn = utils.get_activation_fn(activation=cfg.activation_fn)
-
         activation_dropout_p = cfg.activation_dropout
         if activation_dropout_p == 0:
             # for backwards compatibility with models that use cfg.relu_dropout
@@ -67,7 +68,7 @@ class TransformerEncoderLayerBase(nn.Module):
         return FeedForwardBlock(
             embed_dim,
             cfg.encoder.ffn_embed_dim,
-            activation_fn=activation_fn,
+            activation_fn=self.activation_fn,
             dropout_module=self.dropout_module,
             activation_dropout_module=activation_dropout_module,
             q_noise=self.quant_noise,
@@ -171,8 +172,15 @@ class TransformerEncoderLayerBase(nn.Module):
 # backward compatible with the legacy argparse format
 class TransformerEncoderLayer(TransformerEncoderLayerBase):
     def __init__(self, args):
+        from fairseq.models.transformer import TransformerConfig
+
         super().__init__(TransformerConfig.from_namespace(args))
         self.args = args
+
+    def build_ffn(self, embed_dim, args):
+        return super().build_ffn(
+            embed_dim, TransformerConfig.from_namespace(args)
+        )
 
     def build_self_attention(self, embed_dim, args):
         return super().build_self_attention(
@@ -252,6 +260,10 @@ class TransformerDecoderLayerBase(nn.Module):
             else None
         )
 
+        self.activation_fn = utils.get_activation_fn(
+            activation=cfg.activation_fn
+        )
+
         self.ffn = self.build_ffn(self.embed_dim, cfg)
         self.final_layer_norm = LayerNorm(self.embed_dim, export=cfg.export)
         self.need_attn = True
@@ -259,7 +271,6 @@ class TransformerDecoderLayerBase(nn.Module):
         self.onnx_trace = False
 
     def build_ffn(self, embed_dim, cfg):
-        activation_fn = utils.get_activation_fn(activation=cfg.activation_fn)
         activation_dropout_p = cfg.activation_dropout
         if activation_dropout_p == 0:
             # for backwards compatibility with models that use cfg.relu_dropout
@@ -276,8 +287,8 @@ class TransformerDecoderLayerBase(nn.Module):
 
         return FeedForwardBlock(
             embed_dim,
-            args.decoder.ffn_embed_dim,
-            activation_fn=activation_fn,
+            cfg.decoder.ffn_embed_dim,
+            activation_fn=self.activation_fn,
             dropout_module=self.dropout_module,
             activation_dropout_module=activation_dropout_module,
             ffn_layernorm=ffn_layernorm,
@@ -386,7 +397,7 @@ class TransformerDecoderLayerBase(nn.Module):
         else:
             y = x
 
-        x, attn_weights_self = self.self_attn(
+        x, _ = self.self_attn(
             query=x,
             key=y,
             value=y,
@@ -423,7 +434,7 @@ class TransformerDecoderLayerBase(nn.Module):
                 assert incremental_state is not None
                 self.encoder_attn._set_input_buffer(incremental_state, saved_state)
 
-            x, attn_weights_enc = self.encoder_attn(
+            x, attn = self.encoder_attn(
                 query=x,
                 key=encoder_out,
                 value=encoder_out,
@@ -459,8 +470,8 @@ class TransformerDecoderLayerBase(nn.Module):
                 ]
             else:
                 self_attn_state = [saved_state["prev_key"], saved_state["prev_value"]]
-            return x, attn_weights_self, attn_weights_enc, self_attn_state
-        return x, attn_weights_self, attn_weights_enc, None
+            return x, attn, self_attn_state
+        return x, attn, None
 
     def make_generation_fast_(self, need_attn: bool = False, **kwargs):
         self.need_attn = need_attn
@@ -471,6 +482,8 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
     def __init__(
         self, args, no_encoder_attn=False, add_bias_kv=False, add_zero_attn=False
     ):
+        from fairseq.models.transformer import TransformerConfig
+
         super().__init__(
             TransformerConfig.from_namespace(args),
             no_encoder_attn=no_encoder_attn,
@@ -494,115 +507,3 @@ class TransformerDecoderLayer(TransformerDecoderLayerBase):
             embed_dim,
             TransformerConfig.from_namespace(args),
         )
-
-
-class FeedForwardBlock(nn.Module):
-    """
-    Wrapper for the feedforward Transformer block.
-
-    TODO
-    """
-    def __init__(
-        self,
-        embed_dim,
-        ffn_embed_dim,
-        activation_fn,
-        dropout_module=None,
-        activation_dropout_module=None,
-        ffn_layernorm=None,
-        bias=True,
-        q_noise=0.0,
-        qn_block_size=8
-    ):
-        super().__init__()
-        self.embed_dim = embed_dim
-        self.ffn_embed_dim = ffn_embed_dim
-        self.activation_fn = activation_fn
-        self.dropout_module = dropout_module
-        self.activation_dropout_module = activation_dropout_module
-        self.ffn_layernorm = ffn_layernorm
-        self.q_noise = q_noise
-        self.qn_block_size = qn_block_size
-
-        self.fc1 = self.build_fc1(embed_dim, ffn_embed_dim, bias)
-        self.fc2 = self.build_fc2(ffn_embed_dim, embed_dim, bias)
-
-    def build_fc1(self, input_dim, output_dim, bias):
-        return quant_noise(
-            nn.Linear(input_dim, output_dim, bias=bias),
-            p=self.q_noise, block_size=self.qn_block_size
-        )
-
-    def build_fc2(self, input_dim, output_dim, bias):
-        return quant_noise(
-            nn.Linear(input_dim, output_dim, bias=bias),
-            p=self.q_noise, block_size=self.qn_block_size
-        )
-
-    def _get_fc_rank(self, remove_num: int) -> List[int]:
-        f1_filter_param = []
-        for i in range(self.fc1.out_features):
-            f1_filter_param.append(
-                torch.sum(torch.abs(self.fc1.weight[i]))
-                + torch.sum(torch.abs(self.fc2.weight[:, i]))
-                + torch.abs(self.fc1.bias[i])
-            )
-        return sorted(
-            range(len(f1_filter_param)), key=lambda k: f1_filter_param[k], reverse=False
-        )[0:remove_num]
-
-    def _prune_fc_layer(self, remove_index: List[int]):
-        new_fc1_weight = []
-        new_fc1_bias = []
-        for i in range(self.fc1.out_features):
-            if i not in remove_index:
-                new_fc1_weight.append(self.fc1.weight[i])
-                new_fc1_bias.append(self.fc1.bias[i])
-
-        new_fc1_weight = torch.stack(new_fc1_weight).detach()
-        new_fc1_weight.requires_grad = True
-
-        new_fc1_bias = torch.stack(new_fc1_bias).detach()
-        new_fc1_bias.requires_grad = True
-
-        self.fc1 = quant_noise(
-            nn.Linear(self.fc1.in_features, self.fc1.out_features - len(remove_index)),
-            p=self.q_noise,
-            block_size=self.qn_block_size,
-        )
-        self.fc1.weight = torch.nn.Parameter(new_fc1_weight)
-        self.fc1.bias = torch.nn.Parameter(new_fc1_bias)
-
-        new_fc2_weight = []
-        new_fc2_bias = []
-        for i in range(self.fc2.in_features):
-            if i not in remove_index:
-                new_fc2_weight.append(self.fc2.weight[:, i])
-        new_fc2_bias = self.fc2.bias.detach()
-
-        new_fc2_weight = torch.stack(new_fc2_weight, dim=-1).detach()
-        new_fc2_weight.requires_grad = True
-
-        new_fc2_bias = self.fc2.bias.detach()
-        new_fc2_bias.requires_grad = True
-
-        self.fc2 = quant_noise(
-            nn.Linear(self.fc2.in_features - len(remove_index), self.fc2.out_features),
-            p=self.q_noise,
-            block_size=self.qn_block_size,
-        )
-        self.fc2.weight = torch.nn.Parameter(new_fc2_weight)
-        self.fc2.bias = torch.nn.Parameter(new_fc2_bias)
-
-    def forward(self, x):
-        """TODO"""
-        x = self.activation_fn(self.fc1(x))
-        x = self.activation_dropout_module(x)
-        if self.ffn_layernorm is not None:
-            x = self.ffn_layernorm(x)
-        x = self.fc2(x)
-
-        fc_result = x
-
-        x = self.dropout_module(x)
-        return x, fc_result

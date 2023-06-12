@@ -263,6 +263,13 @@ class TranslationConfig(FairseqDataclass):
     eval_bleu_print_samples: bool = field(
         default=False, metadata={"help": "print sample generations during validation"}
     )
+    eval_acc: bool = field(
+        default=False, metadata={"help": "evaluation with Accuracy scores"}
+    )
+    eval_ter: bool = field(
+        default=False, metadata={"help": "evaluation with TER scores"}
+    )
+
 
 
 @register_task("translation", dataclass=TranslationConfig)
@@ -369,11 +376,13 @@ class TranslationTask(FairseqTask):
     def build_model(self, cfg, from_checkpoint=False):
         model = super().build_model(cfg, from_checkpoint)
         if self.cfg.eval_bleu:
+            logger.info(self.cfg.eval_bleu_detok_args)
             detok_args = json.loads(self.cfg.eval_bleu_detok_args)
             self.tokenizer = encoders.build_tokenizer(
                 Namespace(tokenizer=self.cfg.eval_bleu_detok, **detok_args)
             )
 
+            logger.info(self.cfg.eval_bleu_args)
             gen_args = json.loads(self.cfg.eval_bleu_args)
             self.sequence_generator = self.build_generator(
                 [model], Namespace(**gen_args)
@@ -448,9 +457,9 @@ class TranslationTask(FairseqTask):
                     return round(bleu.score, 2)
 
                 metrics.log_derived('bleu', compute_bleu)
-        if self.args.eval_acc:
+        if self.cfg.eval_acc:
             metrics.log_scalar('accuracy', sum_logs('accuracy'))
-        if self.args.eval_ter:
+        if self.cfg.eval_ter:
             metrics.log_scalar('ter', sum_logs('ter'))
 
     def max_positions(self):

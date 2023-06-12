@@ -40,7 +40,7 @@ class MaskedMultiheadAttention(MultiheadAttention):
         q_noise=0.0,
         qn_block_size=8,
         xformers_att_config: Optional[str] = None,
-        xformers_blocksparse_layout: Optional[Tensor] = None
+        xformers_blocksparse_layout: Optional[Tensor] = None,
         xformers_blocksparse_blocksize: Optional[int] = 16
     ):
         super().__init__(
@@ -167,7 +167,7 @@ class MaskedMultiheadAttention(MultiheadAttention):
 
     def forward(
         self,
-        query: Tensor,,
+        query: Tensor,
         key: Optional[Tensor],
         value: Optional[Tensor],
         key_padding_mask: Optional[Tensor] = None,
@@ -200,15 +200,15 @@ class MaskedMultiheadAttention(MultiheadAttention):
                 assert value is not None
                 assert src_len, key_bsz == value.shape[:2]
 
-        if (
-            not self.onnx_trace
-            and not is_tpu
-            and incremental_state is None
-            and not static_kv
-            and not torch.jit.is_scripting()
-            and not self.skip_embed_dim_check
-        ):
-            raise ValueError('non-fairseq attention not supported option is not supported')
+        #if (
+        #    not self.onnx_trace
+        #    and not is_tpu
+        #    and incremental_state is None
+        #    and not static_kv
+        #    and not torch.jit.is_scripting()
+        #    and not self.skip_embed_dim_check
+        #):
+        #    raise ValueError('non-fairseq attention not supported option is not supported')
 
         if incremental_state is not None:
             saved_state = self._get_input_buffer(incremental_state)
@@ -363,7 +363,7 @@ class MaskedMultiheadAttention(MultiheadAttention):
         if key_padding_mask is not None:
             # don't attend to padding symbols
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
-            if not self.tpu:
+            if not is_tpu:
                 attn_weights = attn_weights.view(
                     kv_bsz, -1, self.num_heads, tgt_len, src_len
                 )

@@ -342,7 +342,7 @@ def train(
             # HACK: We want to pass the epoch number to the criterion through the samples
             for s in samples:
                 s["epoch_num"] = progress.wrapped_bar.epoch
-            samples = [add_fixed_mask_to_input(s, args) for s in samples]
+            samples = [add_fixed_mask_to_input(s, cfg) for s in samples]
             log_output = trainer.train_step(samples)
 
         if log_output is not None:  # not OOM, overflow, ...
@@ -534,7 +534,7 @@ def validate(
                     and i > cfg.dataset.max_valid_steps
                 ):
                     break
-                sample = add_fixed_mask_to_input(sample, args)
+                sample = add_fixed_mask_to_input(sample, cfg)
                 trainer.valid_step(sample)
 
         # log validation stats

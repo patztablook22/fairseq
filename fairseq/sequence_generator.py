@@ -828,7 +828,7 @@ class EnsembleModel(nn.Module):
         avg_attn: Optional[Tensor] = None
         encoder_out: Optional[Dict[str, List[Tensor]]] = None
 
-        from fairseq.models.transformer_modular import TransformerModularModel
+        from fairseq.models.transformer import TransformerModularModel
         for i, model in enumerate(self.models):
             if self.has_encoder():
                 encoder_out = encoder_outs[i]

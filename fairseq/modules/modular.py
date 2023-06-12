@@ -3,6 +3,9 @@ from typing import Dict, Optional
 import torch
 from torch import Tensor, nn
 
+from fairseq.modules.fairseq_dropout import FairseqDropout
+from fairseq.models.fairseq_incremental_decoder import FairseqIncrementalDecoder
+
 
 _EPS = 1e-9
 
@@ -57,7 +60,7 @@ class ModularCtrl(FairseqIncrementalDecoder):
         hidden_dim: size of the hidden layers
         word_dropout: a probability of dropping the whole input representation
             from the input sequence (see Iyyer et al., 2015)
-        hard_samples: apply hard thresholding (0 or 1) on the Gumbel-Softmax output
+        use_hard_samples: apply hard thresholding (0 or 1) on the Gumbel-Softmax output
         averaged_tokens: average the input sequence and produce a single mask
             for the whole sequence (in decoder, in a given timestep)
     """
@@ -71,13 +74,12 @@ class ModularCtrl(FairseqIncrementalDecoder):
         dropout=0.0,
         word_dropout=0.0,
         bias=True,
-        add_output_bias=False
+        add_output_bias=False,
         dictionary=None,
         use_hard_samples=False,
         input_average_pooling=False,
     ):
         super().__init__(dictionary)
-
         self.n_modules = n_modules
 
         self.activation_fn = activation_fn
@@ -86,7 +88,7 @@ class ModularCtrl(FairseqIncrementalDecoder):
         )
         self.word_dropout = word_dropout
 
-        self.layers = []
+        self.layers = nn.ModuleList([])
         for _ in range(hidden_depth):
             if hidden_dim is None:
                 raise ValueError("controller hidden_dim cannot be NoneType if hidden_depth > 0")
@@ -102,8 +104,7 @@ class ModularCtrl(FairseqIncrementalDecoder):
 
     def fc_net(self, x: Tensor):
         for layer in self.layers:
-            x = layer(x)
-            x = self.activation_fn(x)
+            x = self.activation_fn(layer(x))
             x = self.dropout_module(x)
         return x
 
@@ -146,7 +147,7 @@ class ModularCtrl(FairseqIncrementalDecoder):
         future_mask: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         temperature=1.0
-    ) -> ModularCtrlOut:
+    ) -> Dict[str, Tensor]:
         """
         Compute a module mask based on the input sequence x.
 
@@ -217,7 +218,7 @@ class ModularCtrl(FairseqIncrementalDecoder):
             sampled_probs = gumbel_sigmoid(logits, temperature)
             sampled_probs = ModularCtrl._mask_output_probs(sampled_probs, padding_mask)
             module_mask = sampled_probs
-            if self.hard_samples:
+            if self.use_hard_samples:
                 module_mask = (module_mask > 0.5).float()
                 module_mask = (module_mask - sampled_probs).detach() + sampled_probs
 
@@ -230,6 +231,7 @@ class ModularCtrl(FairseqIncrementalDecoder):
             "logits": logits,
             "sampled_probs": sampled_probs,
             "mask": module_mask,
+            "padding_mask": padding_mask,
         }
 
     @staticmethod

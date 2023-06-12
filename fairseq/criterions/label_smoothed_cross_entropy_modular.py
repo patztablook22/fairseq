@@ -3,30 +3,96 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
-import math
-import random
-import torch
+from dataclasses import dataclass, field
 
+import math
+import torch
 from torch.distributions.bernoulli import Bernoulli
 
-from fairseq import metrics, utils
-from fairseq.criterions import FairseqCriterion, register_criterion
-from fairseq.criterions.label_smoothed_cross_entropy import LabelSmoothedCrossEntropyCriterion
+from fairseq import utils
+from fairseq.logging import metrics
+from fairseq.criterions import register_criterion
+from fairseq.criterions.label_smoothed_cross_entropy import (
+    LabelSmoothedCrossEntropyCriterion,
+    LabelSmoothedCrossEntropyCriterionConfig,
+)
 from fairseq.modules import ModularCtrl
 
 
 _EPS = 1e-9
 
 
+@dataclass
+class LabelSmoothedCrossEntropyCriterionModularConfig(
+    LabelSmoothedCrossEntropyCriterionConfig
+):
+    module_ctrl_max_temperature: float = field(
+        default=10.,
+        metadata={"help": "starting temperature for ctrl gumbel_sigmoid"},
+    )
+    module_ctrl_min_temperature: float = field(
+        default=0.0625,
+        metadata={
+            "help": "minimum temperature for ctrl gumbel_sigmoid, default value taken"
+            " from Ramesh et al. (2021), \"Zero-Shot Text-to-Image Generation\""
+        },
+    )
+    module_ctrl_anneal_type: str = field(
+        default="exponential",
+        metadata={"help": "temperature annealing type [exponential, cosine]"},
+    )
+    module_ctrl_anneal_rate: float = field(
+        default=1e-6,
+        metadata={
+            "help": "temperature anneal rate (exponential annealing) for controller\'s"
+            " gumbel_sigmoid"
+        },
+    )
+    module_ctrl_cosine_reset_decay: float = field(
+        default=0.95,
+        metadata={"help": "TODO"},
+    )
+    module_ctrl_cosine_reset_every_n_steps: int = field(
+        default=1,
+        metadata={"help": "TODO"},
+    )
+    module_kl_div_regularizer_ratio: float = field(
+        default=.5,
+        metadata={
+            "help": "a regularization ratio of modules that should be unmasked"
+            " by the controller (used in kl_div regularizer)"
+        },
+    )
+    module_kl_div_regularizer_weight: float = field(
+        default=0.,
+        metadata={"help": "weighting of the kl_div regularization term"},
+    )
+    module_budget_regularizer_ratio: float = field(
+        default=.5,
+        metadata={
+            "help": "a regularization ratio of modules that should be unmasked"
+            " by the controller (used in budget regularizer)"
+        },
+    )
+    module_budget_regularizer_weight: float = field(
+        default=0.,
+        metadata={"help": "weighting of the budget regularization term"},
+    )
+    vertical_penalty_weight: float = field(
+        default=0.,
+        metadata={"help": "TODO"},
+    )
+
+
 def selection_entropy(controllers):
     entropies = [
         ModularCtrl._mask_output_probs(
-            Bernoulli(logits=ctrl.logits).entropy(), ctrl.padding_mask
+            Bernoulli(logits=ctrl["logits"]).entropy(), ctrl["padding_mask"]
         ) for ctrl in controllers if ctrl is not None
     ]
     n_all = [
         ModularCtrl._mask_output_probs(
-            torch.ones_like(ctrl.logits), ctrl.padding_mask
+            torch.ones_like(ctrl["logits"]), ctrl["padding_mask"]
         ) for ctrl in controllers if ctrl is not None
     ]
 
@@ -38,9 +104,9 @@ def selection_entropy(controllers):
 def batch_selection_entropy(controllers):
     def layer_entropy(layer_ctrl):
         probs = ModularCtrl._mask_output_probs(
-            Bernoulli(logits=layer_ctrl.logits).probs, layer_ctrl.padding_mask)
+            Bernoulli(logits=layer_ctrl["logits"]).probs, layer_ctrl["padding_mask"])
         n_all = ModularCtrl._mask_output_probs(
-            torch.ones_like(layer_ctrl.logits), layer_ctrl.padding_mask)
+            torch.ones_like(layer_ctrl["logits"]), layer_ctrl["padding_mask"])
         probs = probs.sum(0) / n_all.sum(0)
         probs = torch.stack([probs, 1 - probs], -1)
         return (-probs * torch.log(probs + _EPS)).sum(-1)
@@ -48,13 +114,13 @@ def batch_selection_entropy(controllers):
     entropies = [
         ModularCtrl._mask_output_probs(
             layer_entropy(ctrl),
-            (ctrl.padding_mask.all(0) if ctrl.padding_mask is not None else None)
+            (ctrl["padding_mask"].all(0) if ctrl["padding_mask"] is not None else None)
         ) for ctrl in controllers if ctrl is not None
     ]
     n_all = [
         ModularCtrl._mask_output_probs(
-            torch.ones_like(ctrl.logits[0]),
-            (ctrl.padding_mask.all(0) if ctrl.padding_mask is not None else None)
+            torch.ones_like(ctrl["logits"][0]),
+            (ctrl["padding_mask"].all(0) if ctrl["padding_mask"] is not None else None)
         ) for ctrl in controllers if ctrl is not None
     ]
 
@@ -63,13 +129,13 @@ def batch_selection_entropy(controllers):
     return torch.tensor(0.)
 
 
-def compute_masked_ratio(controllers):
+def compute_masked_ratio(controllers, reduce=True):
     n_masked = [
-        ModularCtrl._mask_output_probs(ctrl.mask, ctrl.padding_mask).sum([-2, -1])
+        ModularCtrl._mask_output_probs(ctrl["mask"], ctrl["padding_mask"]).sum([-2, -1])
         for ctrl in controllers if ctrl is not None
     ]
     n_all = [
-        ModularCtrl._mask_output_probs(torch.ones_like(ctrl.mask), ctrl.padding_mask).sum([-2, -1])
+        ModularCtrl._mask_output_probs(torch.ones_like(ctrl["mask"]), ctrl["padding_mask"]).sum([-2, -1])
         for ctrl in controllers if ctrl is not None
     ]
     if n_all:
@@ -78,18 +144,21 @@ def compute_masked_ratio(controllers):
         res = n_masked / (n_all + _EPS)
 
         assert res.dim() == 1
+
+        if reduce:
+            return res.sum()
         return res
     return torch.tensor(0.)
 
 
-def compute_masked_budget(controllers, mask_budget):
+def compute_masked_budget(controllers, mask_budget, reduce=True):
     assert 0. <= mask_budget <= 1.
     n_masked = [
-        ModularCtrl._mask_output_probs(ctrl.mask, ctrl.padding_mask).sum([-2, -1])
+        ModularCtrl._mask_output_probs(ctrl["mask"], ctrl["padding_mask"]).sum([-2, -1])
         for ctrl in controllers if ctrl is not None
     ]
     n_all = [
-        ModularCtrl._mask_output_probs(torch.ones_like(ctrl.mask), ctrl.padding_mask).sum([-2, -1])
+        ModularCtrl._mask_output_probs(torch.ones_like(ctrl["mask"]), ctrl["padding_mask"]).sum([-2, -1])
         for ctrl in controllers if ctrl is not None
     ]
     if n_all:
@@ -98,24 +167,46 @@ def compute_masked_budget(controllers, mask_budget):
         res = n_masked / (n_all + _EPS)
 
         assert res.dim() == 1
-        return torch.sqrt((res - mask_budget)**2 + _EPS)  # EPS for numerical stability
+        res = torch.sqrt((res - mask_budget)**2 + _EPS)  # EPS for numerical stability
+
+        if reduce:
+            return res.sum()
+        return res
     return torch.tensor(0.)
 
 
-def compute_kl_div(controllers, q):
+def compute_kl_div(controllers, q, reduce=True):
     res = []
     for ctrl in controllers:
         if ctrl is None:
             continue
-        probs = torch.sigmoid(ctrl.logits)
+        probs = torch.sigmoid(ctrl["logits"])
         kl_div = -(q * torch.log(probs + _EPS) + (1 - q) * torch.log(1 - probs + _EPS))
-        res.append(ModularCtrl._mask_output_probs(kl_div, ctrl.padding_mask))
+        res.append(ModularCtrl._mask_output_probs(kl_div, ctrl["padding_mask"]))
 
     if res:
         res = torch.cat(res, dim=1)
         res = res.sum([-2, -1])
 
         assert res.dim() == 1
+
+        if reduce:
+            return res.sum()
+        return res
+    return torch.tensor(0.)
+
+
+def compute_vertical_penalty(controllers, reduce=True):
+    n_masked = [
+        ModularCtrl._mask_output_probs(ctrl["mask"], ctrl["padding_mask"]).sum([-2, -1])
+        for ctrl in controllers if ctrl is not None
+    ]
+    if n_masked:
+        res = torch.stack(n_masked, 1).sum(1)
+        assert res.dim() == 1
+
+        if reduce:
+            return res.sum()
         return res
     return torch.tensor(0.)
 
@@ -149,25 +240,36 @@ def cosine_annealing(step, max_steps, min_temp, max_temp):
     return min_temp + 0.5 * (max_temp - min_temp) * (1 + math.cos(math.pi * step / max_steps))
 
 
-@register_criterion('label_smoothed_cross_entropy_modular')
-class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriterion):
-
-    def __init__(self,
-                 task,
-                 sentence_avg,
-                 label_smoothing,
-                 module_ctrl_max_temperature,
-                 module_ctrl_min_temperature,
-                 module_ctrl_anneal_type,
-                 module_ctrl_anneal_rate,
-                 module_ctrl_cosine_reset_decay,
-                 module_ctrl_cosine_reset_every_n_steps,
-                 module_kl_div_regularizer_ratio,
-                 module_kl_div_regularizer_weight,
-                 module_budget_regularizer_ratio,
-                 module_budget_regularizer_weight):
+@register_criterion(
+    "modular_label_smoothed_cross_entropy",
+    dataclass=LabelSmoothedCrossEntropyCriterionModularConfig,
+)
+class ModularLabelSmoothedCrossEntropyCriterion(
+    LabelSmoothedCrossEntropyCriterion
+):
+    def __init__(
+        self,
+        task,
+        sentence_avg,
+        label_smoothing,
+        ignore_prefix_size,
+        report_accuracy,
+        module_ctrl_max_temperature,
+        module_ctrl_min_temperature,
+        module_ctrl_anneal_type,
+        module_ctrl_anneal_rate,
+        module_ctrl_cosine_reset_decay,
+        module_ctrl_cosine_reset_every_n_steps,
+        module_kl_div_regularizer_ratio,
+        module_kl_div_regularizer_weight,
+        module_budget_regularizer_ratio,
+        module_budget_regularizer_weight,
+        vertical_penalty_weight,
+    ):
         # TODO: move the annealing-related parameters to a single JSON-like parameter
-        super().__init__(task, sentence_avg, label_smoothing)
+        super().__init__(
+            task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy,
+        )
         self.module_ctrl_max_temperature = module_ctrl_max_temperature
         self.module_ctrl_min_temperature = module_ctrl_min_temperature
 
@@ -180,37 +282,9 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
         self.module_kl_div_regularizer_weight = module_kl_div_regularizer_weight
         self.module_budget_regularizer_ratio = module_budget_regularizer_ratio
         self.module_budget_regularizer_weight = module_budget_regularizer_weight
+        self.vertical_penalty_weight = vertical_penalty_weight
 
         self.temp = self.module_ctrl_max_temperature
-
-    @staticmethod
-    def add_args(parser):
-        # fmt: off
-        super(
-            LabelSmoothedCrossEntropyModularCriterion,
-            LabelSmoothedCrossEntropyModularCriterion).add_args(parser)
-        parser.add_argument('--module-ctrl-max-temperature', type=float, default=10.,
-                            help='starting temperature for ctrl gumbel_sigmoid')
-        parser.add_argument('--module-ctrl-min-temperature', type=float, default=(0.0625),
-                            help='minimum temperature for ctrl gumbel_sigmoid, default value taken '
-                                 'from Ramesh et al. (2021), "Zero-Shot Text-to-Image Generation"')
-        parser.add_argument('--module-ctrl-anneal-type', type=str, default='exponential',
-                            help='temperature annealing type [exponential, cosine]')
-        parser.add_argument('--module-ctrl-anneal-rate', type=float, default=1e-6,
-                            help='temperature anneal rate (exponential annealing) for controller\'s gumbel_sigmoid')
-        parser.add_argument('--module-ctrl-cosine-reset-decay', type=float, default=0.95,
-                            help='TODO')
-        parser.add_argument('--module-ctrl-cosine-reset-every-n-steps', type=float, default=1.,
-                            help='TODO')
-        parser.add_argument('--module-kl-div-regularizer-ratio', type=float, default=.5,
-                            help='a regularization ratio of modules that should be unmasked by the controller (used in kl_div regularizer)')
-        parser.add_argument('--module-kl-div-regularizer-weight', type=float, default=0.,
-                            help='weighting of the kl_div regularization term')
-        parser.add_argument('--module-budget-regularizer-ratio', type=float, default=.5,
-                            help='a regularization ratio of modules that should be unmasked by the controller (used in budget regularizer)')
-        parser.add_argument('--module-budget-regularizer-weight', type=float, default=0.,
-                            help='weighting of the budget regularization term')
-        # fmt: on
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -221,121 +295,126 @@ class LabelSmoothedCrossEntropyModularCriterion(LabelSmoothedCrossEntropyCriteri
         3) logging outputs to display while training
         """
         if self.training:
-            step = sample["update_num"]
-            if self.module_ctrl_anneal_type == 'exponential':
-                self.temp = exponential_annealing(
-                    self.temp,
-                    step,
-                    self.module_ctrl_anneal_rate,
-                    self.module_ctrl_min_temperature)
-            elif self.module_ctrl_anneal_type == 'cosine':
-                step = (step + 1) % self.module_ctrl_cosine_reset_every_n_steps
-                if step == 0:
-                    self.module_ctrl_max_temperature *= self.module_ctrl_cosine_reset_decay
-                self.temp = cosine_annealing(
-                    step,
-                    self.module_ctrl_cosine_reset_every_n_steps,
-                    self.module_ctrl_min_temperature,
-                    self.module_ctrl_max_temperature)
-            elif self.module_ctrl_anneal_type == 'constant':
-                self.temp = self.module_ctrl_max_temperature
-            else:
-                raise ValueError('Unknown module annealing type: {}'.format(self.module_ctrl_anneal_type))
+            self.update_temperature(sample)
 
         net_output = model(**sample['net_input'], ctrl_temperature=self.temp)
-        loss, nll_loss, module_stats = self.compute_loss(
-            model, net_output, sample, reduce=reduce)
-
+        loss, nll_loss, regularizer_stats = self.compute_loss(
+            model, net_output, sample, reduce=reduce
+        )
         sample_size = sample['target'].size(0) if self.sentence_avg else sample['ntokens']
         logging_output = {
-            'loss': loss.data,
-            'nll_loss': nll_loss.data,
-            'module_kl_div': module_stats["kl_div"].data,
-            'module_mask_budget': module_stats["mask_budget"].data,
-            'module_mask_ratio': module_stats["mask_ratio"].data,
-            'sel_entropy' : module_stats["sel_entropy"].data,
-            'batch_entropy' : module_stats["batch_entropy"].data,
-            'temperature': self.temp,
-            'ntokens': sample['ntokens'],
-            'nsentences': sample['target'].size(0),
-            'sample_size': sample_size,
+            "loss": loss.data,
+            "nll_loss": nll_loss.data,
+            "module_kl_div": regularizer_stats["kl_div"].data,
+            "module_mask_budget": regularizer_stats["mask_budget"].data,
+            "module_mask_ratio": regularizer_stats["mask_ratio"].data,
+            "vertical_penalty": regularizer_stats["vertical_penalty"].data,
+            "sel_entropy": regularizer_stats["sel_entropy"].data,
+            "batch_entropy": regularizer_stats["batch_entropy"].data,
+            "temperature": self.temp,
+            "ntokens": sample["ntokens"],
+            "nsentences": sample["target"].size(0),
+            "sample_size": sample_size,
         }
+        if self.report_accuracy:
+            n_correct, total = self.compute_accuracy(model, net_output, sample)
+            logging_output["n_correct"] = utils.item(n_correct.data)
+            logging_output["total"] = utils.item(total.data)
         return loss, sample_size, logging_output
 
-    def compute_loss(self, model, net_output, sample, reduce=True):
-        lprobs = model.get_normalized_probs(net_output, log_probs=True)
-        lprobs = lprobs.view(-1, lprobs.size(-1))
-        bsz = lprobs.size(0)
+    def update_temperature(self, sample):
+        step = sample["update_num"]
+        if self.module_ctrl_anneal_type == 'exponential':
+            self.temp = exponential_annealing(
+                self.temp,
+                step,
+                self.module_ctrl_anneal_rate,
+                self.module_ctrl_min_temperature)
+        elif self.module_ctrl_anneal_type == 'cosine':
+            step = (step + 1) % self.module_ctrl_cosine_reset_every_n_steps
+            if step == 0:
+                self.module_ctrl_max_temperature *= self.module_ctrl_cosine_reset_decay
+            self.temp = cosine_annealing(
+                step,
+                self.module_ctrl_cosine_reset_every_n_steps,
+                self.module_ctrl_min_temperature,
+                self.module_ctrl_max_temperature)
+        elif self.module_ctrl_anneal_type == 'constant':
+            self.temp = self.module_ctrl_max_temperature
+        else:
+            raise ValueError('Unknown module annealing type: {}'.format(self.module_ctrl_anneal_type))
 
-        module_stats = {}
-
-        # Flatten the controller outputs structure for computing relevant statistics (kl_div, etc.)
-        ctrl_outputs = net_output[1]['ctrl_outputs']
-        ctrl_outputs = [
+    def get_regularizer_values(self, model, net_output, reduce=True):
+        ctrl_outputs = net_output[1]["ctrl_outputs"]
+        module_ctrl_outputs = [
             ctrl_out for key in ctrl_outputs for ctrl_out in ctrl_outputs[key]
-            if ctrl_out is not None
+            if "vert" not in key and ctrl_out is not None
+        ]
+        vert_ctrl_outputs = [
+            ctrl_out for key in ctrl_outputs for ctrl_out in ctrl_outputs[key]
+            if "vert" in key and ctrl_out is not None
         ]
 
-        module_stats["sel_entropy"] = selection_entropy(ctrl_outputs)
-        module_stats["batch_entropy"] = batch_selection_entropy(ctrl_outputs)
+        return {
+            "sel_entropy": selection_entropy(module_ctrl_outputs),
+            "batch_entropy": batch_selection_entropy(module_ctrl_outputs),
+            "kl_div": compute_kl_div(
+                module_ctrl_outputs, self.module_kl_div_regularizer_ratio, reduce
+            ),
+            "mask_budget": compute_masked_budget(
+                module_ctrl_outputs, self.module_budget_regularizer_ratio, reduce
+            ),
+            "mask_ratio": compute_masked_ratio(module_ctrl_outputs, reduce),
+            "vertical_penalty": compute_vertical_penalty(vert_ctrl_outputs, reduce),
+        }
 
-        target = model.get_targets(sample, net_output).view(-1, 1)
-        loss, nll_loss = label_smoothed_nll_loss(
-            lprobs, target, self.eps, ignore_index=self.padding_idx,
-            reduce=False,
+    def compute_loss(self, model, net_output, sample, reduce=True):
+        loss, nll_loss = super().compute_loss(model, net_output, sample)
+        regularizer_stats = self.get_regularizer_values(
+            model,
+            net_output,
+            reduce=reduce,
         )
-        loss = loss.view(bsz, -1).sum(1)
 
-        kl_div = compute_kl_div(ctrl_outputs, self.module_kl_div_regularizer_ratio)
-        mask_budget = compute_masked_budget(ctrl_outputs, self.module_budget_regularizer_ratio)
-        mask_ratio = compute_masked_ratio(ctrl_outputs)
+        loss += self.vertical_penalty_weight * regularizer_stats["vertical_penalty"]
+        loss += self.module_kl_div_regularizer_weight * regularizer_stats["kl_div"]
+        loss += self.module_budget_regularizer_weight * regularizer_stats["mask_budget"]
 
-        if reduce:
-            loss = loss.sum()
-            nll_loss = nll_loss.sum()
-            kl_div = kl_div.sum()
-            mask_ratio = mask_ratio.sum()
-            mask_budget = mask_budget.sum()
-        loss += self.module_kl_div_regularizer_weight * kl_div
-        loss += self.module_budget_regularizer_weight * mask_budget
 
-        module_stats["kl_div"] = kl_div
-        module_stats["mask_ratio"] = mask_ratio
-        module_stats["mask_budget"] = mask_budget
+        return loss, nll_loss, regularizer_stats
 
-        return loss, nll_loss, module_stats
-
-    @staticmethod
-    def reduce_metrics(logging_outputs) -> None:
+    @classmethod
+    def reduce_metrics(cls, logging_outputs) -> None:
         """Aggregate logging outputs from data parallel training."""
-        logging_len = len(logging_outputs)
-        loss_sum = sum(log.get('loss', 0) for log in logging_outputs)
-        nll_loss_sum = sum(log.get('nll_loss', 0) for log in logging_outputs)
-        kl_div_sum = sum(log.get('module_kl_div', 0) for log in logging_outputs)
-        mask_budget_sum = sum(log.get('module_mask_budget', 0) for log in logging_outputs)
-        mask_ratio_sum = sum(log.get('module_mask_ratio', 0) for log in logging_outputs)
-        sel_entropy = sum(log.get('sel_entropy', 0) for log in logging_outputs)
-        batch_entropy = sum(log.get('batch_entropy', 0) for log in logging_outputs)
-        ntokens = sum(log.get('ntokens', 0) for log in logging_outputs)
-        sample_size = sum(log.get('sample_size', 0) for log in logging_outputs)
-        nsentences = sum(log.get('nsentences', 0) for log in logging_outputs)
-        temp = sum(log.get('temperature', 0) for log in logging_outputs)
+        super().reduce_metrics(logging_outputs)
+        nsentences = sum(log.get("nsentences", 0) for log in logging_outputs)
+        ntokens = sum(log.get("ntokens", 0) for log in logging_outputs)
 
-        metrics.log_scalar('loss', loss_sum / sample_size / math.log(2), sample_size, round=3)
-        metrics.log_scalar('nll_loss', nll_loss_sum / ntokens / math.log(2), ntokens, round=3)
-        metrics.log_scalar('module_KL_div', kl_div_sum / ntokens, ntokens, round=3)
-        metrics.log_scalar('module_mask_budget', mask_budget_sum / nsentences, nsentences, round=3)
-        metrics.log_scalar('module_mask_ratio', mask_ratio_sum / nsentences, nsentences, round=3)
-        metrics.log_scalar('sel_entropy', sel_entropy, 1, round=3)
-        metrics.log_scalar('batch_entropy', batch_entropy, 1, round=3)
-        metrics.log_derived('ppl', lambda meters: utils.get_perplexity(meters['nll_loss'].avg))
-        metrics.log_scalar('temperature', temp, 1, round=3)
+        kl_div_sum = sum(log.get("module_kl_div", 0) for log in logging_outputs)
+        mask_budget_sum = sum(log.get("module_mask_budget", 0) for log in logging_outputs)
+        mask_ratio_sum = sum(log.get("module_mask_ratio", 0) for log in logging_outputs)
+        vertical_penalty_sum = sum(log.get("vertical_penalty", 0) for log in logging_outputs)
 
-    @staticmethod
-    def logging_outputs_can_be_summed() -> bool:
-        """
-        Whether the logging outputs returned by `forward` can be summed
-        across workers prior to calling `reduce_metrics`. Setting this
-        to True will improves distributed training speed.
-        """
-        return True
+        sel_entropy = sum(log.get("sel_entropy", 0) for log in logging_outputs)
+        batch_entropy = sum(log.get("batch_entropy", 0) for log in logging_outputs)
+        temp = sum(log.get("temperature", 0) for log in logging_outputs)
+
+        metrics.log_scalar(
+            "module_KL_div", kl_div_sum / nsentences, nsentences, round=3
+        )
+        metrics.log_scalar(
+            "module_mask_budget", mask_budget_sum / nsentences, nsentences, round=3
+        )
+        metrics.log_scalar(
+            "module_mask_ratio", mask_ratio_sum / nsentences, nsentences, round=3
+        )
+        metrics.log_scalar(
+            "vertical_penalty", vertical_penalty_sum / nsentences, nsentences, round=3
+        )
+        metrics.log_scalar(
+            "average_depth", vertical_penalty_sum / ntokens, ntokens, round=3
+        )
+
+        metrics.log_scalar("sel_entropy", sel_entropy, 1, round=3)
+        metrics.log_scalar("batch_entropy", batch_entropy, 1, round=3)
+        metrics.log_scalar("temperature", temp, 1, round=3)

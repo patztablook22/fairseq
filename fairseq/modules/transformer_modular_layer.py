@@ -6,16 +6,18 @@
 from typing import Dict, List, Optional
 
 import torch
-import torch.nn as nn
 from torch import Tensor
 
 from fairseq import utils
 from fairseq.modules import (
-    FeedForwardBlock,
-    ModularCtrl,
+    MaskedFeedForwardBlock,
     MaskedMultiheadAttention,
-    TransformerEncoderLayerBase,
+)
+from fairseq.modules.fairseq_dropout import FairseqDropout
+from fairseq.modules.modular import ModularCtrl
+from fairseq.modules.transformer_layer import (
     TransformerDecoderLayerBase,
+    TransformerEncoderLayerBase,
 )
 
 
@@ -33,16 +35,15 @@ class TransformerModularEncoderLayer(TransformerEncoderLayerBase):
     def __init__(self, cfg, return_fc=False):
         super().__init__(cfg, return_fc)
         self.ctrl_ffn = None
-        if cfg.encoder.ffn_modules is not None and cfg.encoder.ffn_modules > 1:
-            self.ctrl_ffn = self.build_ffn_controller(embed_dim, cfg)
+        if cfg.module_ctrl.encoder_ffn:
+            assert cfg.encoder.ffn_modules is not None 
+            self.ctrl_ffn = self.build_ffn_controller(self.embed_dim, cfg)
 
         self.ctrl_self = None
         if cfg.module_ctrl.encoder_attn:
-            self.ctrl_self = self.build_self_attn_controller(embed_dim, cfg)
+            self.ctrl_self = self.build_self_attn_controller(self.embed_dim, cfg)
 
     def build_ffn(self, embed_dim, cfg):
-        activation_fn = utils.get_activation_fn(activation=cfg.activation_fn)
-
         activation_dropout_p = cfg.activation_dropout
         if activation_dropout_p == 0:
             # for backwards compatibility with models that use cfg.relu_dropout
@@ -54,8 +55,8 @@ class TransformerModularEncoderLayer(TransformerEncoderLayerBase):
         return MaskedFeedForwardBlock(
             embed_dim,
             cfg.encoder.ffn_embed_dim,
-            cfg.encoder.ffn_modules,
-            activation_fn=activation_fn,
+            activation_fn=self.activation_fn,
+            num_modules=cfg.encoder.ffn_modules,
             dropout_module=self.dropout_module,
             activation_dropout_module=activation_dropout_module,
             q_noise=self.quant_noise,
@@ -66,6 +67,7 @@ class TransformerModularEncoderLayer(TransformerEncoderLayerBase):
         return ModularCtrl(
             embed_dim,
             cfg.encoder.ffn_modules,
+            self.activation_fn,
             hidden_depth=cfg.module_ctrl.hidden_depth,
             hidden_dim=cfg.module_ctrl.hidden_dim,
             dropout=cfg.dropout,
@@ -89,7 +91,8 @@ class TransformerModularEncoderLayer(TransformerEncoderLayerBase):
     def build_self_attn_controller(self, embed_dim, cfg):
         return ModularCtrl(
             embed_dim,
-            args.encoder_attention_heads,
+            cfg.encoder.attention_heads,
+            self.activation_fn,
             hidden_depth=cfg.module_ctrl.hidden_depth,
             hidden_dim=cfg.module_ctrl.hidden_dim,
             dropout=cfg.dropout,
@@ -219,20 +222,19 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
     ):
         super().__init__(cfg, no_encoder_attn, add_bias_kv, add_zero_attn)
         self.ctrl_ffn = None
-        if cfg.decoder.ffn_modules is not None and cfg.decoder.ffn_modules > 1:
-            self.ctrl_ffn = self.build_ffn_controller(embed_dim, cfg)
+        if cfg.module_ctrl.decoder_ffn:
+            assert cfg.decoder.ffn_modules is not None
+            self.ctrl_ffn = self.build_ffn_controller(self.embed_dim, cfg)
 
         self.ctrl_self = None
         if cfg.module_ctrl.decoder_attn:
-            self.ctrl_self = self.build_self_attn_controller(embed_dim, cfg)
+            self.ctrl_self = self.build_self_attn_controller(self.embed_dim, cfg)
 
         self.ctrl_enc = None
-        if args.module_ctrl.encdec_attn
-            self.ctrl_enc = self.build_encoder_attn_controller(embed_dim, cfg)
+        if cfg.module_ctrl.encdec_attn:
+            self.ctrl_enc = self.build_encoder_attn_controller(self.embed_dim, cfg)
 
     def build_ffn(self, embed_dim, cfg):
-        activation_fn = utils.get_activation_fn(activation=cfg.activation_fn)
-
         activation_dropout_p = cfg.activation_dropout
         if activation_dropout_p == 0:
             # for backwards compatibility with models that use cfg.relu_dropout
@@ -244,8 +246,8 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
         return MaskedFeedForwardBlock(
             embed_dim,
             cfg.decoder.ffn_embed_dim,
-            cfg.decoder.ffn_modules,
-            activation_fn=activation_fn,
+            activation_fn=self.activation_fn,
+            num_modules=cfg.decoder.ffn_modules,
             dropout_module=self.dropout_module,
             activation_dropout_module=activation_dropout_module,
             q_noise=self.quant_noise,
@@ -256,6 +258,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
         return ModularCtrl(
             embed_dim,
             cfg.decoder.ffn_modules,
+            self.activation_fn,
             hidden_depth=cfg.module_ctrl.hidden_depth,
             hidden_dim=cfg.module_ctrl.hidden_dim,
             dropout=cfg.dropout,
@@ -282,6 +285,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
         return ModularCtrl(
             embed_dim,
             cfg.decoder.attention_heads,
+            self.activation_fn,
             hidden_depth=cfg.module_ctrl.hidden_depth,
             hidden_dim=cfg.module_ctrl.hidden_dim,
             dropout=cfg.dropout,
@@ -296,7 +300,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
             embed_dim,
             cfg.decoder.attention_heads,
             kdim=cfg.encoder.embed_dim,
-            vdim=cfg.encoder.embed_dim,,
+            vdim=cfg.encoder.embed_dim,
             dropout=cfg.attention_dropout,
             encoder_decoder_attention=True,
             q_noise=self.quant_noise,
@@ -307,6 +311,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
         return ModularCtrl(
             embed_dim,
             cfg.decoder.attention_heads,
+            self.activation_fn,
             hidden_depth=cfg.module_ctrl.hidden_depth,
             hidden_dim=cfg.module_ctrl.hidden_dim,
             dropout=cfg.dropout,
@@ -315,9 +320,6 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
             add_output_bias=cfg.module_ctrl.add_output_bias,
             input_average_pooling=cfg.module_ctrl.input_average_pooling
         )
-
-    def prepare_for_onnx_export_(self):
-        self.onnx_trace = True
 
     def forward(
         self,
@@ -408,7 +410,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
             )
             self_mod_mask = ctrl_self_out["mask"]
 
-        x, attn_weights_self = self.self_attn(
+        x, _ = self.self_attn(
             query=x,
             key=y,
             value=y,
@@ -419,7 +421,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
             attn_mask=self_attn_mask,
             module_mask=self_mod_mask,
         )
-        self.c_attn is not None:
+        if self.c_attn is not None:
             tgt_len, bsz = x.size(0), x.size(1)
             x = x.view(tgt_len, bsz, self.nh, self.head_dim)
             x = torch.einsum("tbhd,h->tbhd", x, self.c_attn)
@@ -460,7 +462,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
                 )
                 enc_mod_mask = ctrl_enc_out["mask"]
 
-            x, attn_weights_enc = self.encoder_attn(
+            x, attn = self.encoder_attn(
                 query=x,
                 key=encoder_out,
                 value=encoder_out,
@@ -472,7 +474,7 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
                 module_mask=enc_mod_mask,
             )
             x =self.dropout_module(x)
-            x = residual_connection(x, residual)
+            x = self.residual_connection(x, residual)
             if not self.normalize_before:
                 x = self.encoder_attn_layer_norm(x)
 
@@ -494,10 +496,10 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
             )
             ffn_mod_mask = ctrl_ffn_out["mask"]
 
-        x = self.ffn(x, module_mask=ffn_mod_mask)
+        x, _ = self.ffn(x, module_mask=ffn_mod_mask)
         if self.w_resid is not None:
             residual = torch.mul(self.w_resid, residual)
-        x = residual_connection(x)
+        x = self.residual_connection(x, residual)
         if not self.normalize_before:
             x = self.final_layer_norm(x)
         if self.onnx_trace and incremental_state is not None:
@@ -512,102 +514,18 @@ class TransformerModularDecoderLayer(TransformerDecoderLayerBase):
             else:
                 self_attn_state = [saved_state["prev_key"], saved_state["prev_value"]]
             return (
-                x,
-                attn_weights_self,
-                attn_weights_enc,
-                self_attn_state,
+                x, attn, self_attn_state,
                 {
                     "decoder_attn": ctrl_self_out,
-                    "enc_dec_attn": ctrl_enc_out,
+                    "encdec_attn": ctrl_enc_out,
                     "decoder_ffn": ctrl_ffn_out
                 }
             )
         return (
-            x,
-            attn_weights_self,
-            attn_weights_enc,
-            None,
+            x, attn, None,
             {
                 "decoder_attn": ctrl_self_out,
-                "enc_dec_attn": ctrl_enc_out,
+                "encdec_attn": ctrl_enc_out,
                 "decoder_ffn": ctrl_ffn_out
             }
         )
-
-    @torch.jit.export
-    def reorder_incremental_state(
-        self,
-        incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
-        new_order: Tensor,
-    ):
-        """Scriptable reorder incremental state in transformer layers."""
-        self.self_attn.reorder_incremental_state(incremental_state, new_order)
-
-        if self.encoder_attn is not None:
-            self.encoder_attn.reorder_incremental_state(incremental_state, new_order)
-
-        if self.ctrl_self is not None:
-            self.ctrl_self.reorder_incremental_state(incremental_state, new_order)
-
-        if self.ctrl_enc is not None:
-            self.ctrl_enc.reorder_incremental_state(incremental_state, new_order)
-
-        if self.ctrl_ffn is not None:
-            self.ctrl_ffn.reorder_incremental_state(incremental_state, new_order)
-
-
-class MaskedFeedForwardBlock(FeedForwardBlock):
-    """
-    Wrapper for the feedforward Transformer block allowing module masking.
-
-    TODO
-    """
-    def __init__(
-        self,
-        embed_dim,
-        ffn_embed_dim,
-        num_modules=1,
-        activation_fn,
-        dropout_module=None,
-        activation_dropout_module=None,
-        ffn_layernorm=None,
-        bias=True,
-        q_noise=0.0,
-        qn_block_size=8
-    ):
-        super().__init__(
-            embed_dim,
-            ffn_embed_dim,
-            activation_fn,
-            dropout_module,
-            activation_dropout_module,
-            ffn_layernorm,
-            bias,
-            q_noise,
-            qn_block_size
-        )
-        self.num_modules = num_modules
-        self.module_dim = ffn_embed_dim // num_modules
-        assert (
-            self.module_dim * self.num_modules == self.ffn_embed_dim
-        ), "ffn_embed_dim must be divisible by num_modules"
-
-    def forward(self, x, module_mask: Tensor) -> Tensor:
-        """TODO"""
-        x = self.activation_fn(self.fc1(x))
-        x = self.activation_dropout_module(x)
-        if self.ffn_layernorm is not None:
-            x = self.ffn_layernorm(x)
-        if module_mask is not None:
-            x_len, bsz, ffn_embed_dim = x.size()
-            x = x.contiguous().view(x_len, bsz, self.num_modules, self.module_dim)
-
-            module_mask = module_mask.transpose(0, 1).unsqueeze(-1)
-            x = x * module_mask
-            x = x.view(x_len, bsz, self.ffn_embed_dim)
-        x = self.fc2(x)
-
-        fc_result = x
-
-        x = self.dropout_module(x)
-        return x, fc_result
