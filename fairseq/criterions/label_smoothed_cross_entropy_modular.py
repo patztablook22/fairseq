@@ -107,20 +107,26 @@ def batch_selection_entropy(controllers):
             Bernoulli(logits=layer_ctrl["logits"]).probs, layer_ctrl["padding_mask"])
         n_all = ModularCtrl._mask_output_probs(
             torch.ones_like(layer_ctrl["logits"]), layer_ctrl["padding_mask"])
-        probs = probs.sum(0) / n_all.sum(0)
+        probs = probs.sum([0, 1]) / n_all.sum([0, 1])
         probs = torch.stack([probs, 1 - probs], -1)
         return (-probs * torch.log(probs + _EPS)).sum(-1)
 
     entropies = [
         ModularCtrl._mask_output_probs(
-            layer_entropy(ctrl),
-            (ctrl["padding_mask"].all(0) if ctrl["padding_mask"] is not None else None)
+            layer_entropy(ctrl).unsqueeze(0),
+            (
+                ctrl["padding_mask"].all(0).all(0, keepdim=True)
+                if ctrl["padding_mask"] is not None else None
+            )
         ) for ctrl in controllers if ctrl is not None
     ]
     n_all = [
         ModularCtrl._mask_output_probs(
             torch.ones_like(ctrl["logits"][0]),
-            (ctrl["padding_mask"].all(0) if ctrl["padding_mask"] is not None else None)
+            (
+                ctrl["padding_mask"].all(0).all(0, keepdim=True)
+                if ctrl["padding_mask"] is not None else None
+            )
         ) for ctrl in controllers if ctrl is not None
     ]
 
@@ -395,9 +401,9 @@ class ModularLabelSmoothedCrossEntropyCriterion(
         mask_ratio_sum = sum(log.get("module_mask_ratio", 0) for log in logging_outputs)
         vertical_penalty_sum = sum(log.get("vertical_penalty", 0) for log in logging_outputs)
 
-        sel_entropy = sum(log.get("sel_entropy", 0) for log in logging_outputs)
-        batch_entropy = sum(log.get("batch_entropy", 0) for log in logging_outputs)
-        temp = sum(log.get("temperature", 0) for log in logging_outputs)
+        sel_entropy_sum = sum(log.get("sel_entropy", 0) for log in logging_outputs)
+        batch_entropy_sum = sum(log.get("batch_entropy", 0) for log in logging_outputs)
+        temp_sum = sum(log.get("temperature", 0) for log in logging_outputs)
 
         metrics.log_scalar(
             "module_KL_div", kl_div_sum / nsentences, nsentences, round=3
@@ -415,6 +421,6 @@ class ModularLabelSmoothedCrossEntropyCriterion(
             "average_depth", vertical_penalty_sum / ntokens, ntokens, round=3
         )
 
-        metrics.log_scalar("sel_entropy", sel_entropy, 1, round=3)
-        metrics.log_scalar("batch_entropy", batch_entropy, 1, round=3)
-        metrics.log_scalar("temperature", temp, 1, round=3)
+        metrics.log_scalar("sel_entropy", sel_entropy_sum, 1, round=3)
+        metrics.log_scalar("batch_entropy", batch_entropy_sum, 1, round=3)
+        metrics.log_scalar("temperature", temp_sum, 1, round=3)

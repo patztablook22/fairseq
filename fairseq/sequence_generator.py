@@ -1018,7 +1018,7 @@ class SequenceGeneratorWithAlignment(SequenceGenerator):
 
 class SequenceGeneratorWithModuleMask(SequenceGenerator):
 
-    def __init__(self, models, tgt_dict, **kwargs):
+    def __init__(self, models, tgt_dict, left_pad_target=False, print_module_mask=False, **kwargs):
         """Generates translations of a given source sentence.
 
         Produces module selections chosen by the modular layers in the model.
@@ -1026,14 +1026,13 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
         TODO - finish the docstring
         """
         super().__init__(EnsembleModelWithModuleMask(models), tgt_dict, **kwargs)
-        self.left_pad_target = False
+        self.left_pad_target = left_pad_target
 
         # TODO: this needs to be gathered from the model itself
-        self.ctrl_keys = ['encoder_attn', 'decoder_attn', 'enc_dec_attn', 'encoder_ffn', 'decoder_ffn']
+        self.ctrl_keys = ["encoder_attn", "decoder_attn", "encdec_attn", "encoder_ffn", "decoder_ffn"]
 
     @torch.no_grad()
     def generate(self, models, sample, **kwargs):
-        self.model.reset_incremental_state()
         finalized = super()._generate(sample, **kwargs)
 
         src_tokens = sample["net_input"]["src_tokens"]
@@ -1055,39 +1054,39 @@ class SequenceGeneratorWithModuleMask(SequenceGenerator):
 
         def get_module_mask_string(ctrl_out, i):
             if ctrl_out is None:
-                return ''
-            return ','.join(
-                ''.join(m.int().cpu().numpy().astype(np.str))
-                for m in ctrl_out.mask[i]
+                return ""
+            return ",".join(
+                "".join(m.int().cpu().numpy().astype(str))
+                for m in ctrl_out["mask"][i]
             )
 
         def get_module_probs_string(ctrl_out, i):
             if ctrl_out is None:
-                return ''
-            return ','.join(
-                '#'.join((torch.sigmoid(m)).float().cpu().numpy().astype(np.str))
-                for m in ctrl_out.logits[i]
+                return ""
+            return ",".join(
+                "#".join((torch.sigmoid(m)).float().cpu().numpy().astype(str))
+                for m in ctrl_out["logits"][i]
             )
 
         for i in range(bsz * beam_size):
             # Mask shape: (len, bsz, num. heads)
             for key in self.ctrl_keys:
                 if key in ctrl_outputs:
-                    module_probs = ';'.join([
-                        '{}:{}'.format(layer_num, get_module_probs_string(ctrl_out, i))
+                    module_probs = ";".join([
+                        "{}:{}".format(layer_num, get_module_probs_string(ctrl_out, i))
                         for layer_num, ctrl_out in enumerate(ctrl_outputs[key])
                     ])
-                    finalized[i // beam_size][i % beam_size]['{}_probs'.format(key)] = module_probs
+                    finalized[i // beam_size][i % beam_size]["{}_probs".format(key)] = module_probs
 
         for i in range(bsz * beam_size):
             # Mask shape: (len, bsz, num. heads)
             for key in self.ctrl_keys:
                 if key in ctrl_outputs:
-                    module_mask = ';'.join([
-                        '{}:{}'.format(layer_num, get_module_mask_string(ctrl_out, i))
+                    module_mask = ";".join([
+                        "{}:{}".format(layer_num, get_module_mask_string(ctrl_out, i))
                         for layer_num, ctrl_out in enumerate(ctrl_outputs[key])
                     ])
-                    finalized[i // beam_size][i % beam_size]['{}_mask'.format(key)] = module_mask
+                    finalized[i // beam_size][i % beam_size]["{}_mask".format(key)] = module_mask
         return finalized
 
     def _prepare_batch_for_module_mask(self, sample, hypothesis):
@@ -1137,7 +1136,6 @@ class SequenceGeneratorWithAttentionWeights(SequenceGenerator):
 
     @torch.no_grad()
     def generate(self, models, sample, **kwargs):
-        self.model.reset_incremental_state()
         finalized = super()._generate(sample, **kwargs)
 
         src_tokens = sample["net_input"]["src_tokens"]
@@ -1249,9 +1247,9 @@ class EnsembleModelWithModuleMask(EnsembleModel):
                 src_lengths=src_lengths,
                 module_mask=module_mask,
             )
-            for key, value in encoder_out.ctrl_outputs.items():
-                extra['ctrl_outputs'][key] = value
-            ctrl_outputs.append(extra['ctrl_outputs'])
+            for key, value in encoder_out["ctrl_outputs"].items():
+                extra["ctrl_outputs"][key] = value
+            ctrl_outputs.append(extra["ctrl_outputs"])
 
         if len(self.models) > 1:
             return self._average_ctrl_outputs(ctrl_outputs)

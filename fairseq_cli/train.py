@@ -42,7 +42,7 @@ from fairseq.trainer import Trainer
 
 
 def add_fixed_mask_to_input(sample, cfg):
-    module_mask = cfg.module_ctrl_fixed_mask
+    module_mask = cfg.common.module_ctrl_fixed_mask
     if module_mask is None:
         return sample
     device = sample["net_input"]["src_tokens"].device

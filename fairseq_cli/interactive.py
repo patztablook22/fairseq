@@ -218,27 +218,28 @@ def main(cfg: FairseqConfig):
             src_lengths = batch.src_lengths
             constraints = batch.constraints
 
-            module_mask = cfg.module_ctrl_fixed_mask
-            if module_mask is not None:
-                module_mask = torch.Tensor(
-                    [int(x) for x in module_mask.split(',')]
-                ).float()
-
             if use_cuda:
                 src_tokens = src_tokens.cuda()
                 src_lengths = src_lengths.cuda()
                 if constraints is not None:
                     constraints = constraints.cuda()
-                if module_mask is not None:
-                    module_mask = module_mask.cuda()
 
             sample = {
                 "net_input": {
                     "src_tokens": src_tokens,
                     "src_lengths": src_lengths,
-                    "module_mask": module_mask,
                 },
             }
+
+            module_mask = cfg.common.module_ctrl_fixed_mask
+            if module_mask is not None:
+                module_mask = torch.Tensor(
+                    [int(x) for x in module_mask.split(',')]
+                ).float()
+                if module_mask is not None:
+                   module_mask = module_mask.cuda()
+                sample["module_mask"] = module_mask
+
             translate_start_time = time.time()
             translations = task.inference_step(
                 generator, models, sample, constraints=constraints
@@ -312,11 +313,12 @@ def main(cfg: FairseqConfig):
                         ["{}-{}".format(src, tgt) for src, tgt in alignment]
                     )
                     print("A-{}\t{}".format(id_, alignment_str))
-                if cfg.generation.print_selection:
+                if cfg.generation.print_module_mask:
                     # TODO: get the mask keys directly from the model
                     for key in hypo:
                         if "_mask" in key:
                             print('M{}-{}\t{}'.format(key, id, hypo[key]))
+                if cfg.generation.print_module_probs:
                     for key in hypo:
                         if "_probs" in key:
                             print('M{}_probs-{}\t{}'.format(key, id, hypo[key]))
