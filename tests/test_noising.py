@@ -6,8 +6,9 @@
 import unittest
 from typing import Dict, List
 
-import tests.utils as test_utils
 import torch
+
+import tests.utils as test_utils
 from fairseq import utils
 from fairseq.data import (
     Dictionary,
@@ -138,7 +139,7 @@ class TestDataNoising(unittest.TestCase):
         return x, torch.LongTensor(src_len)
 
     def assert_eos_at_end(self, x, x_len, eos):
-        """Asserts last token of every sentence in x is EOS """
+        """Asserts last token of every sentence in x is EOS"""
         for i in range(len(x_len)):
             self.assertEqual(
                 x[x_len[i] - 1][i],
@@ -373,7 +374,7 @@ class TestDataNoising(unittest.TestCase):
         )
 
     def assert_no_eos_at_end(self, x, x_len, eos):
-        """Asserts that the last token of each sentence in x is not EOS """
+        """Asserts that the last token of each sentence in x is not EOS"""
         for i in range(len(x_len)):
             self.assertNotEqual(
                 x[x_len[i] - 1][i],
@@ -408,7 +409,10 @@ class TestDataNoising(unittest.TestCase):
             self.assert_no_eos_at_end(x=x_noised, x_len=l_noised, eos=vocab.eos())
 
     def _get_noising_dataset_batch(
-        self, src_tokens_no_pad, src_dict, append_eos_to_tgt=False,
+        self,
+        src_tokens_no_pad,
+        src_dict,
+        append_eos_to_tgt=False,
     ):
         """
         Constructs a NoisingDataset and the corresponding
@@ -433,7 +437,8 @@ class TestDataNoising(unittest.TestCase):
             src=noising_dataset, tgt=tgt, src_sizes=None, src_dict=src_dict
         )
         language_pair_dataset = TransformEosDataset(
-            language_pair_dataset, src_dict.eos(),
+            language_pair_dataset,
+            src_dict.eos(),
             append_eos_to_tgt=append_eos_to_tgt,
         )
 

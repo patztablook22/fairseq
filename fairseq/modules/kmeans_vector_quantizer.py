@@ -5,7 +5,6 @@
 
 import torch
 import torch.nn as nn
-
 from fairseq.modules import Fp32GroupNorm
 
 
@@ -13,17 +12,17 @@ class KmeansVectorQuantizer(nn.Module):
     def __init__(
         self, dim, num_vars, groups, combine_groups, vq_dim, time_first, gamma=0.25
     ):
-        '''Vector quantization using straight pass-through estimator (i.e. kmeans)
+        """Vector quantization using straight pass-through estimator (i.e. kmeans)
 
-                Args:
-                    dim: input dimension (channels)
-                    num_vars: number of quantized vectors per group
-                    groups: number of groups for vector quantization
-                    combine_groups: whether to use the vectors for all groups
-                    vq_dim: dimensionality of the resulting quantized vector
-                    time_first: if true, expect input in BxTxC format, otherwise in BxCxT
-                    gamma: commitment loss coefficient
-                '''
+        Args:
+            dim: input dimension (channels)
+            num_vars: number of quantized vectors per group
+            groups: number of groups for vector quantization
+            combine_groups: whether to use the vectors for all groups
+            vq_dim: dimensionality of the resulting quantized vector
+            time_first: if true, expect input in BxTxC format, otherwise in BxCxT
+            gamma: commitment loss coefficient
+        """
         super().__init__()
 
         self.groups = groups
@@ -51,7 +50,7 @@ class KmeansVectorQuantizer(nn.Module):
         self.mse_mean = nn.MSELoss(reduction="mean")
 
     def _pass_grad(self, x, y):
-        """ Manually set gradient for backward pass.
+        """Manually set gradient for backward pass.
         for y = f(x), ensure that during the backward pass,
         dL/dy = dL/dx regardless of f(x).
         Returns:
@@ -101,15 +100,16 @@ class KmeansVectorQuantizer(nn.Module):
         assert ze.shape == zq.shape, (ze.shape, zq.shape)
         x = self._pass_grad(ze, zq)
 
-        hard_x = (
-            idx.new_zeros(bsz*tsz*self.groups, self.num_vars)
+        with torch.no_grad():
+            hard_x = (
+                idx.new_zeros(bsz * tsz * self.groups, self.num_vars)
                 .scatter_(-1, idx.view(-1, 1), 1.0)
                 .view(bsz * tsz, self.groups, -1)
-        )
-        hard_probs = torch.mean(hard_x.float(), dim=0)
-        result["code_perplexity"] = torch.exp(
-            -torch.sum(hard_probs * torch.log(hard_probs + 1e-7), dim=-1)
-        ).sum()
+            )
+            hard_probs = torch.mean(hard_x.float(), dim=0)
+            result["code_perplexity"] = torch.exp(
+                -torch.sum(hard_probs * torch.log(hard_probs + 1e-7), dim=-1)
+            ).sum()
 
         if produce_targets:
             result["targets"] = idx

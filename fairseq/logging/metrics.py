@@ -11,11 +11,10 @@ on the aggregation context in which the logging occurs. See the
 :func:`aggregate` context manager for more details.
 """
 
-from collections import defaultdict, OrderedDict
 import contextlib
-import time
-from typing import Callable, Dict, List, Optional
 import uuid
+from collections import defaultdict
+from typing import Callable, List, Optional
 
 from .meters import *
 
@@ -132,6 +131,46 @@ def log_scalar(
         agg[key].update(value, weight)
 
 
+def log_scalar_sum(
+    key: str,
+    value: float,
+    priority: int = 10,
+    round: Optional[int] = None,
+):
+    """Log a scalar value that is summed for reporting.
+
+    Args:
+        key (str): name of the field to log
+        value (float): value to log
+        priority (int): smaller values are logged earlier in the output
+        round (Optional[int]): number of digits to round to when displaying
+    """
+    for agg in get_active_aggregators():
+        if key not in agg:
+            agg.add_meter(key, SumMeter(round=round), priority)
+        agg[key].update(value)
+
+
+def log_concat_tensor(
+    key: str,
+    value: torch.Tensor,
+    priority: int = 10,
+    dim: int = 0,
+):
+    """Log a scalar value that is summed for reporting.
+
+    Args:
+        key (str): name of the field to log
+        value (float): value to log
+        priority (int): smaller values are logged earlier in the output
+        round (Optional[int]): number of digits to round to when displaying
+    """
+    for agg in get_active_aggregators():
+        if key not in agg:
+            agg.add_meter(key, ConcatTensorMeter(dim=dim), priority)
+        agg[key].update(value)
+
+
 def log_derived(key: str, fn: Callable[[MetersDict], float], priority: int = 20):
     """Log a scalar value derived from other meters.
 
@@ -184,7 +223,7 @@ def log_start_time(key: str, priority: int = 40, round: Optional[int] = None):
         agg[key].start()
 
 
-def log_stop_time(key: str, weight: float = 0., prehook=None):
+def log_stop_time(key: str, weight: float = 0.0, prehook=None):
     """Log the duration of some event in seconds.
 
     The duration will be computed since :func:`log_start_time` was called.
@@ -279,13 +318,19 @@ def get_smoothed_values(name: str) -> Dict[str, float]:
 
 
 def state_dict():
-    return OrderedDict([
-        (name, agg.state_dict())
-        for name, agg in _aggregators.items()
-    ])
+    return OrderedDict([(name, agg.state_dict()) for name, agg in _aggregators.items()])
 
 
 def load_state_dict(state_dict):
     for name, agg_state in state_dict.items():
         _aggregators[name] = MetersDict()
         _aggregators[name].load_state_dict(agg_state)
+
+
+def xla_metrics_report():
+    try:
+        import torch_xla.debug.metrics as met
+
+        print(met.metrics_report())
+    except ImportError:
+        return

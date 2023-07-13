@@ -9,36 +9,38 @@ from multiprocessing import Pool
 
 import torch
 from fairseq import utils
-from fairseq.binarizer import safe_readline
 from fairseq.data import data_utils
+from fairseq.file_chunker_utils import Chunker, find_offsets
 from fairseq.file_io import PathManager
 from fairseq.tokenizer import tokenize_line
 
 
-class Dictionary(object):
+class Dictionary:
     """A mapping from symbols to consecutive integers"""
 
     def __init__(
         self,
         *,  # begin keyword-only arguments
+        bos="<s>",
         pad="<pad>",
         eos="</s>",
         unk="<unk>",
-        bos="<s>",
         extra_special_symbols=None,
+        add_special_symbols=True,
     ):
-        self.unk_word, self.pad_word, self.eos_word = unk, pad, eos
+        self.bos_word, self.unk_word, self.pad_word, self.eos_word = bos, unk, pad, eos
         self.symbols = []
         self.count = []
         self.indices = {}
-        self.bos_index = self.add_symbol(bos)
-        self.pad_index = self.add_symbol(pad)
-        self.eos_index = self.add_symbol(eos)
-        self.unk_index = self.add_symbol(unk)
-        if extra_special_symbols:
-            for s in extra_special_symbols:
-                self.add_symbol(s)
-        self.nspecial = len(self.symbols)
+        if add_special_symbols:
+            self.bos_index = self.add_symbol(bos)
+            self.pad_index = self.add_symbol(pad)
+            self.eos_index = self.add_symbol(eos)
+            self.unk_index = self.add_symbol(unk)
+            if extra_special_symbols:
+                for s in extra_special_symbols:
+                    self.add_symbol(s)
+            self.nspecial = len(self.symbols)
 
     def __eq__(self, other):
         return self.indices == other.indices
@@ -47,6 +49,9 @@ class Dictionary(object):
         if idx < len(self.symbols):
             return self.symbols[idx]
         return self.unk_word
+
+    def get_count(self, idx):
+        return self.count[idx]
 
     def __len__(self):
         """Returns the number of symbols in the dictionary"""
@@ -69,6 +74,8 @@ class Dictionary(object):
         escape_unk=False,
         extra_symbols_to_ignore=None,
         unk_string=None,
+        include_eos=False,
+        separator=" ",
     ):
         """Helper for converting a tensor of token indices to a string.
 
@@ -76,12 +83,19 @@ class Dictionary(object):
         """
         if torch.is_tensor(tensor) and tensor.dim() == 2:
             return "\n".join(
-                self.string(t, bpe_symbol, escape_unk, extra_symbols_to_ignore)
+                self.string(
+                    t,
+                    bpe_symbol,
+                    escape_unk,
+                    extra_symbols_to_ignore,
+                    include_eos=include_eos,
+                )
                 for t in tensor
             )
 
         extra_symbols_to_ignore = set(extra_symbols_to_ignore or [])
-        extra_symbols_to_ignore.add(self.eos())
+        if not include_eos:
+            extra_symbols_to_ignore.add(self.eos())
 
         def token_string(i):
             if i == self.unk():
@@ -95,13 +109,13 @@ class Dictionary(object):
         if hasattr(self, "bos_index"):
             extra_symbols_to_ignore.add(self.bos())
 
-        sent = " ".join(
+        sent = separator.join(
             token_string(i)
             for i in tensor
             if utils.item(i) not in extra_symbols_to_ignore
         )
 
-        return data_utils.process_bpe_symbol(sent, bpe_symbol)
+        return data_utils.post_process(sent, bpe_symbol)
 
     def unk_string(self, escape=False):
         """Return unknown string, optionally escaped as: <<unk>>"""
@@ -201,7 +215,7 @@ class Dictionary(object):
         return self.unk_index
 
     @classmethod
-    def load(cls, f):
+    def load(cls, f, add_special_symbols=True):
         """Loads the dictionary from a text file with the format:
 
         ```
@@ -210,7 +224,7 @@ class Dictionary(object):
         ...
         ```
         """
-        d = cls()
+        d = cls(add_special_symbols=add_special_symbols)
         d.add_from_file(f)
         return d
 
@@ -221,7 +235,7 @@ class Dictionary(object):
         """
         if isinstance(f, str):
             try:
-                with PathManager.open(f, "r", encoding="utf-8") as fd:
+                with open(PathManager.get_local_path(f), "r", encoding="utf-8") as fd:
                     self.add_from_file(fd)
             except FileNotFoundError as fnfe:
                 raise fnfe
@@ -251,13 +265,12 @@ class Dictionary(object):
                         "Duplicate words can overwrite earlier ones by adding the "
                         "#fairseq:overwrite flag at the end of the corresponding row "
                         "in the dictionary file. If using the Camembert model, please "
-                        "download an updated copy of the model file."
-                        .format(word)
+                        "download an updated copy of the model file.".format(word)
                     )
                 self.add_symbol(word, n=count, overwrite=overwrite)
             except ValueError:
                 raise ValueError(
-                    "Incorrect dictionary format, expected '<token> <cnt> [flags]'"
+                    f"Incorrect dictionary format, expected '<token> <cnt> [flags]': \"{line}\""
                 )
 
     def _save(self, f, kv_iterator):
@@ -298,7 +311,7 @@ class Dictionary(object):
         consumer=None,
         append_eos=True,
         reverse_order=False,
-    ):
+    ) -> torch.IntTensor:
         words = line_tokenizer(line)
         if reverse_order:
             words = list(reversed(words))
@@ -319,25 +332,18 @@ class Dictionary(object):
 
     @staticmethod
     def _add_file_to_dictionary_single_worker(
-        filename, tokenize, eos_word, worker_id=0, num_workers=1
+        filename,
+        tokenize,
+        eos_word,
+        start_offset,
+        end_offset,
     ):
         counter = Counter()
-        with open(PathManager.get_local_path(filename), "r", encoding="utf-8") as f:
-            size = os.fstat(f.fileno()).st_size
-            chunk_size = size // num_workers
-            offset = worker_id * chunk_size
-            end = offset + chunk_size
-            f.seek(offset)
-            if offset > 0:
-                safe_readline(f)  # drop first incomplete line
-            line = f.readline()
-            while line:
+        with Chunker(filename, start_offset, end_offset) as line_iterator:
+            for line in line_iterator:
                 for word in tokenize(line):
                     counter.update([word])
                 counter.update([eos_word])
-                if f.tell() > end:
-                    break
-                line = f.readline()
         return counter
 
     @staticmethod
@@ -346,14 +352,23 @@ class Dictionary(object):
             for w, c in sorted(counter.items()):
                 dict.add_symbol(w, c)
 
+        local_file = PathManager.get_local_path(filename)
+        offsets = find_offsets(local_file, num_workers)
         if num_workers > 1:
+            chunks = zip(offsets, offsets[1:])
             pool = Pool(processes=num_workers)
             results = []
-            for worker_id in range(num_workers):
+            for (start_offset, end_offset) in chunks:
                 results.append(
                     pool.apply_async(
                         Dictionary._add_file_to_dictionary_single_worker,
-                        (filename, tokenize, dict.eos_word, worker_id, num_workers),
+                        (
+                            local_file,
+                            tokenize,
+                            dict.eos_word,
+                            start_offset,
+                            end_offset,
+                        ),
                     )
                 )
             pool.close()
@@ -363,7 +378,7 @@ class Dictionary(object):
         else:
             merge_result(
                 Dictionary._add_file_to_dictionary_single_worker(
-                    filename, tokenize, dict.eos_word
+                    local_file, tokenize, dict.eos_word, offsets[0], offsets[1]
                 )
             )
 

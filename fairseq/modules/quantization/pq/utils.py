@@ -6,12 +6,12 @@
 import logging
 import re
 from operator import attrgetter, itemgetter
-
+import torch
 import numpy as np
-import torch.nn as nn
 import torch.distributed as dist
+import torch.nn as nn
 
-from .modules import PQConv2d, PQLinear, PQEmbedding
+from .modules import PQConv2d, PQEmbedding, PQLinear
 from .pq import PQ
 
 
@@ -25,7 +25,9 @@ def quantize_model_(
     n_iter=15,
     eps=1e-6,
     max_tentatives=100,
+    remove_weights=False,
     verbose=True,
+    state_dict=None,
 ):
     """
     Quantize a model in-place by stages. All the targeted
@@ -58,12 +60,16 @@ def quantize_model_(
           to layers_to_quantize[step]
     """
 
-    quantized_layers = get_layers(model, layers_to_quantize[step])
+    quantized_layers = get_layers(
+        model, layers_to_quantize[step], remove_weights=remove_weights
+    )
 
     for layer in quantized_layers:
 
         # book-keeping
-        is_master_process = (not dist.is_initialized()) or (dist.is_initialized() and dist.get_rank() == 0)
+        is_master_process = (not dist.is_initialized()) or (
+            dist.is_initialized() and dist.get_rank() == 0
+        )
         verbose = verbose and is_master_process
 
         # get block size and centroids
@@ -71,11 +77,13 @@ def quantize_model_(
         block_size = get_param(module, layer, block_sizes_config)
         n_centroids = get_param(module, layer, n_centroids_config)
         if verbose:
-            logging.info(f"Quantizing layer {layer} with block size {block_size} and {n_centroids} centroids")
+            logging.info(
+                f"Quantizing layer {layer} with block size {block_size} and {n_centroids} centroids"
+            )
 
         # quantize layer
         weight = module.weight.data.clone()
-        is_bias = 'bias' in [x[0] for x in module.named_parameters()]
+        is_bias = "bias" in [x[0] for x in module.named_parameters()]
         bias = module.bias.data.clone() if is_bias else None
         quantizer = PQ(
             weight,
@@ -91,6 +99,37 @@ def quantize_model_(
         quantizer.encode()
         centroids = quantizer.centroids.contiguous()
         assignments = quantizer.assignments.contiguous()
+
+        # If n_iter = 0 and state_dict is provided, then
+        # we initialize random assignments and centroids to
+        # random values of the appropriate dimensions
+        # because the quantized model parameters will
+        # overwritten by the state_dict later on.
+        if n_iter == 0 and state_dict:
+            # Initialize random centroids of the correct size
+            centroids = torch.rand(centroids.size())
+            centroids.cuda()
+            # Get counts and assignment keys from layer in loaded checkpoint.
+            counts_key = layer + "." + "counts"
+            assignment_key = layer + "." + "assignments"
+            # Get number of different bins to include.
+            counts = list(state_dict[counts_key].shape)[0]
+            print(layer)
+            print(state_dict[counts_key])
+            print(counts)
+            # Initialize random assignments of the correct size
+            # with an appropriate number of bins.
+            num_assignments = list(state_dict[assignment_key].shape)[0]
+            num_extra = num_assignments - counts
+            print(num_assignments)
+            print(num_extra)
+            assignments_bins = torch.arange(counts)
+            assignments_rand = torch.randint(0, counts - 1, (num_extra,))
+            assignments = torch.cat((assignments_bins, assignments_rand), 0)
+            # assignments = assignments.type(torch.IntTensor)
+            assignments.cuda()
+            print("assignments")
+            print(assignments)
 
         # broadcast results to make sure weights are up-to-date
         if dist.is_initialized():
@@ -148,7 +187,7 @@ def quantize_model_(
     return quantized_layers
 
 
-def get_layers(model, filter_regexp):
+def get_layers(model, filter_regexp, remove_weights=False):
     """
     Filters out the layers according to a regexp. Note that
     we omit biases.
@@ -177,6 +216,10 @@ def get_layers(model, filter_regexp):
 
     # remove .weight in all other names (or .weight_orig is spectral norm)
     all_layers = map(lambda x: x.replace(".weight_orig", ""), all_layers)
+    # remove weights indicates whether the weights extension should be removed, in addition to
+    # weight_orig and weight extension on names
+    if remove_weights:
+        all_layers = map(lambda x: x.replace(".weights", ""), all_layers)
     all_layers = map(lambda x: x.replace(".weight", ""), all_layers)
 
     # return filtered layers
@@ -238,9 +281,7 @@ def get_param(module, layer_name, param_config):
             if "*" in params:
                 feature_value = "*"
             else:
-                raise KeyError(
-                    f"name={layer_name} not in config for {module}"
-                )
+                raise KeyError(f"name={layer_name} not in config for {module}")
         else:
             feature_value = feature_values[0]
 

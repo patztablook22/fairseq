@@ -3,16 +3,18 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+from typing import Dict, List, NamedTuple, Optional
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
+from examples.simultaneous_translation.modules.monotonic_transformer_layer import (
+    TransformerMonotonicDecoderLayer,
+    TransformerMonotonicEncoderLayer,
+)
 from fairseq.models import (
     register_model,
     register_model_architecture,
 )
-
-
 from fairseq.models.transformer import (
     TransformerModel,
     TransformerEncoder,
@@ -20,28 +22,36 @@ from fairseq.models.transformer import (
     base_architecture,
     transformer_iwslt_de_en,
     transformer_vaswani_wmt_en_de_big,
+    tiny_architecture
 )
-
-
-from examples.simultaneous_translation.modules.monotonic_transformer_layer import (
-    TransformerMonotonicDecoderLayer,
-    TransformerMonotonicEncoderLayer
-)
+from torch import Tensor
 
 DEFAULT_MAX_SOURCE_POSITIONS = 1024
 DEFAULT_MAX_TARGET_POSITIONS = 1024
+READ_ACTION = 0
+WRITE_ACTION = 1
+
+TransformerMonotonicDecoderOut = NamedTuple(
+    "TransformerMonotonicDecoderOut",
+    [
+        ("action", int),
+        ("p_choose", Optional[Tensor]),
+        ("attn_list", Optional[List[Optional[Dict[str, Tensor]]]]),
+        ("encoder_out", Optional[Dict[str, List[Tensor]]]),
+        ("encoder_padding_mask", Optional[Tensor]),
+    ],
+)
 
 
-@register_model('transformer_unidirectional')
+@register_model("transformer_unidirectional")
 class TransformerUnidirectionalModel(TransformerModel):
     @classmethod
     def build_encoder(cls, args, src_dict, embed_tokens):
         return TransformerMonotonicEncoder(args, src_dict, embed_tokens)
 
 
-@register_model('transformer_monotonic')
-class TransformerMonotonicModel(TransformerModel):
-
+@register_model("transformer_monotonic")
+class TransformerModelSimulTrans(TransformerModel):
     @classmethod
     def build_encoder(cls, args, src_dict, embed_tokens):
         return TransformerMonotonicEncoder(args, src_dict, embed_tokens)
@@ -50,102 +60,19 @@ class TransformerMonotonicModel(TransformerModel):
     def build_decoder(cls, args, tgt_dict, embed_tokens):
         return TransformerMonotonicDecoder(args, tgt_dict, embed_tokens)
 
-    def _indices_from_states(self, states):
-        if type(states["indices"]["src"]) == list:
-            if next(self.parameters()).is_cuda:
-                tensor = torch.cuda.LongTensor
-            else:
-                tensor = torch.LongTensor
-
-            src_indices = tensor(
-                [states["indices"]["src"][: 1 + states["steps"]["src"]]]
-            )
-
-            tgt_indices = tensor(
-                [
-                    [self.decoder.dictionary.eos()]
-                    + states["indices"]["tgt"]
-                ]
-            )
-        else:
-            src_indices = states["indices"]["src"][: 1 +
-                                                   states["steps"]["src"]]
-            tgt_indices = states["indices"]["tgt"]
-
-        return src_indices, None, tgt_indices
-
-    def predict_from_states(self, states):
-        decoder_states = self.decoder.output_layer(
-            states["decoder_features"]
-        )
-        lprobs = self.get_normalized_probs(
-            [decoder_states[:, -1:]],
-            log_probs=True
-        )
-
-        index = lprobs.argmax(dim=-1)
-
-        token = self.decoder.dictionary.string(index)
-
-        return token, index[0, 0].item()
-
-    def decision_from_states(self, states):
-        '''
-        This funcion take states dictionary as input, and gives the agent
-        a decision of whether read a token from server. Moreover, the decoder
-        states are also calculated here so we can directly generate a target
-        token without recompute every thing
-        '''
-
-        self.eval()
-
-        if len(states["tokens"]["src"]) == 0:
-            return 0
-
-        src_indices, src_lengths, tgt_indices = self._indices_from_states(
-            states)
-
-        # Update encoder states if needed
-        if (
-            "encoder_states" not in states or
-            states["encoder_states"][0].size(1) <= states["steps"]["src"]
-        ):
-            encoder_out_dict = self.encoder(src_indices, src_lengths)
-            states["encoder_states"] = encoder_out_dict
-        else:
-            encoder_out_dict = states["encoder_states"]
-
-        # online means we still need tokens to feed the model
-        states["model_states"]["online"] = not (
-            states["finish_read"]
-            and len(states["tokens"]["src"]) == states["steps"]["src"]
-        )
-
-        states["model_states"]["steps"] = states["steps"]
-
-        x, outputs = self.decoder.forward(
-            prev_output_tokens=tgt_indices,
-            encoder_out=encoder_out_dict,
-            incremental_state=states["model_states"],
-            features_only=True,
-        )
-
-        states["decoder_features"] = x
-
-        return outputs["action"]
-
 
 class TransformerMonotonicEncoder(TransformerEncoder):
-
     def __init__(self, args, dictionary, embed_tokens):
         super().__init__(args, dictionary, embed_tokens)
 
         self.dictionary = dictionary
         self.layers = nn.ModuleList([])
-        self.layers.extend([
-            TransformerMonotonicEncoderLayer(args)
-            for i in range(args.encoder_layers)
-        ])
+        self.layers.extend(
+            [
+                TransformerMonotonicEncoderLayer(args)
+                for i in range(args.encoder_layers)
+            ]
+        )
 
 
 class TransformerMonotonicDecoder(TransformerDecoder):
@@ -166,25 +93,37 @@ class TransformerMonotonicDecoder(TransformerDecoder):
 
         self.dictionary = dictionary
         self.layers = nn.ModuleList([])
-        self.layers.extend([
-            TransformerMonotonicDecoderLayer(args, no_encoder_attn)
-            for _ in range(args.decoder_layers)
-        ])
+        self.layers.extend(
+            [
+                TransformerMonotonicDecoderLayer(args)
+                for _ in range(args.decoder_layers)
+            ]
+        )
+        self.policy_criterion = getattr(args, "policy_criterion", "any")
+        self.num_updates = None
+
+    def set_num_updates(self, num_updates):
+        self.num_updates = num_updates
 
     def pre_attention(
-        self, prev_output_tokens, encoder_out_dict,
-        incremental_state=None
+        self,
+        prev_output_tokens,
+        encoder_out_dict: Dict[str, List[Tensor]],
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
     ):
-        positions = self.embed_positions(
-            prev_output_tokens,
-            incremental_state=incremental_state,
-        ) if self.embed_positions is not None else None
+        positions = (
+            self.embed_positions(
+                prev_output_tokens,
+                incremental_state=incremental_state,
+            )
+            if self.embed_positions is not None
+            else None
+        )
 
         if incremental_state is not None:
             prev_output_tokens = prev_output_tokens[:, -1:]
             if positions is not None:
                 positions = positions[:, -1:]
-
         # embed tokens and positions
         x = self.embed_scale * self.embed_tokens(prev_output_tokens)
 
@@ -193,18 +132,28 @@ class TransformerMonotonicDecoder(TransformerDecoder):
 
         if positions is not None:
             x += positions
-        x = F.dropout(x, p=self.dropout, training=self.training)
+
+        x = self.dropout_module(x)
 
         # B x T x C -> T x B x C
         x = x.transpose(0, 1)
 
-        encoder_out = encoder_out_dict.encoder_out
-        encoder_padding_mask = encoder_out_dict.encoder_padding_mask
+        encoder_out = encoder_out_dict["encoder_out"][0]
+
+        if "encoder_padding_mask" in encoder_out_dict:
+            encoder_padding_mask = (
+                encoder_out_dict["encoder_padding_mask"][0]
+                if encoder_out_dict["encoder_padding_mask"]
+                and len(encoder_out_dict["encoder_padding_mask"]) > 0
+                else None
+            )
+        else:
+            encoder_padding_mask = None
 
         return x, encoder_out, encoder_padding_mask
 
     def post_attention(self, x):
-        if self.layer_norm:
+        if self.layer_norm is not None:
             x = self.layer_norm(x)
 
         # T x B x C -> B x T x C
@@ -215,9 +164,32 @@ class TransformerMonotonicDecoder(TransformerDecoder):
 
         return x
 
+    def clean_cache(
+        self,
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]],
+        end_id: Optional[int] = None,
+    ):
+        """
+        Clean cache in the monotonic layers.
+        The cache is generated because of a forward pass of decoder has run but no prediction,
+        so that the self attention key value in decoder is written in the incremental state.
+        end_id is the last idx of the layers
+        """
+        if end_id is None:
+            end_id = len(self.layers)
+
+        for index, layer in enumerate(self.layers):
+            if index < end_id:
+                layer.prune_incremental_state(incremental_state)
+
     def extract_features(
-        self, prev_output_tokens, encoder_out,
-        incremental_state=None, **unused
+        self,
+        prev_output_tokens,
+        encoder_out: Optional[Dict[str, List[Tensor]]],
+        incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
+        full_context_alignment: bool = False,  # unused
+        alignment_layer: Optional[int] = None,  # unused
+        alignment_heads: Optional[int] = None,  # unsed
     ):
         """
         Similar to *forward* but only return features.
@@ -228,19 +200,15 @@ class TransformerMonotonicDecoder(TransformerDecoder):
                 - a dictionary with any model-specific outputs
         """
         # incremental_state = None
-        (
-            x,
-            encoder_outs,
-            encoder_padding_mask
-        ) = self.pre_attention(
-            prev_output_tokens,
-            encoder_out,
-            incremental_state
+        assert encoder_out is not None
+        (x, encoder_outs, encoder_padding_mask) = self.pre_attention(
+            prev_output_tokens, encoder_out, incremental_state
         )
         attn = None
         inner_states = [x]
-        attn_list = []
-        step_list = []
+        attn_list: List[Optional[Dict[str, Tensor]]] = []
+
+        p_choose = torch.tensor([1.0])
 
         for i, layer in enumerate(self.layers):
 
@@ -250,111 +218,85 @@ class TransformerMonotonicDecoder(TransformerDecoder):
                 encoder_padding_mask=encoder_padding_mask,
                 incremental_state=incremental_state,
                 self_attn_mask=self.buffered_future_mask(x)
-                if incremental_state is None else None,
+                if incremental_state is None
+                else None,
             )
 
             inner_states.append(x)
             attn_list.append(attn)
 
             if incremental_state is not None:
-                curr_steps = layer.get_steps(incremental_state)
-                step_list.append(curr_steps)
+                if_online = incremental_state["online"]["only"]
+                assert if_online is not None
+                if if_online.to(torch.bool):
+                    # Online indicates that the encoder states are still changing
+                    assert attn is not None
+                    if self.policy_criterion == "any":
+                        # Any head decide to read than read
+                        head_read = layer.encoder_attn._get_monotonic_buffer(incremental_state)["head_read"]
+                        assert head_read is not None
+                        if head_read.any():
+                            # We need to prune the last self_attn saved_state
+                            # if model decide not to read
+                            # otherwise there will be duplicated saved_state
+                            self.clean_cache(incremental_state, i + 1)
 
-                if incremental_state.get("online", False):
-                    p_choose = attn["p_choose"].squeeze(0).squeeze(1).gather(1, curr_steps.t())
-
-                    new_steps = (
-                        curr_steps
-                        + (p_choose < 0.5).t().type_as(curr_steps)
-                    )
-
-                    if (new_steps >= incremental_state["steps"]["src"]).any():
-                        # We need to prune the last self_attn saved_state
-                        # if model decide not to read
-                        # otherwise there will be duplicated saved_state
-                        for j in range(i + 1):
-                            self.layers[j].prune_incremental_state(
-                                incremental_state)
-
-                        return x, {"action": 0}
-
-        if (
-            incremental_state is not None
-            and not incremental_state.get("online", False)
-        ):
-            # Here is for fast evaluation
-            fastest_step = torch.max(
-                torch.cat(step_list, dim=1),
-                dim=1,
-                keepdim=True
-            )[0] + 1
-
-            if "fastest_step" in incremental_state:
-                incremental_state["fastest_step"] = torch.cat(
-                    [incremental_state["fastest_step"], fastest_step],
-                    dim=1
-                )
-            else:
-                incremental_state["fastest_step"] = fastest_step
+                            return x, TransformerMonotonicDecoderOut(
+                                action=0,
+                                p_choose=p_choose,
+                                attn_list=None,
+                                encoder_out=None,
+                                encoder_padding_mask=None,
+                            )
 
         x = self.post_attention(x)
 
-        return x, {
-            "action": 1,
-            "attn_list": attn_list,
-            "step_list": step_list,
-            "encoder_out": encoder_out,
-            "encoder_padding_mask": encoder_padding_mask,
-        }
-
-    def reorder_incremental_state(self, incremental_state, new_order):
-        super().reorder_incremental_state(incremental_state, new_order)
-        if "fastest_step" in incremental_state:
-            incremental_state["fastest_step"] = (
-                incremental_state["fastest_step"]
-                .index_select(0, new_order)
-            )
+        return x, TransformerMonotonicDecoderOut(
+            action=1,
+            p_choose=p_choose,
+            attn_list=attn_list,
+            encoder_out=encoder_out,
+            encoder_padding_mask=encoder_padding_mask,
+        )
 
 
-@register_model_architecture(
-    'transformer_monotonic',
-    'transformer_monotonic'
-)
-def base_monotonic_rchitecture(args):
+@register_model_architecture("transformer_monotonic", "transformer_monotonic")
+def base_monotonic_architecture(args):
     base_architecture(args)
-    args.encoder_unidirectional = getattr(
-        args, 'encoder_unidirectional', False)
+    args.encoder_unidirectional = getattr(args, "encoder_unidirectional", False)
 
 
 @register_model_architecture(
-    'transformer_monotonic',
-    'transformer_monotonic_iwslt_de_en'
+    "transformer_monotonic", "transformer_monotonic_iwslt_de_en"
 )
 def transformer_monotonic_iwslt_de_en(args):
     transformer_iwslt_de_en(args)
-    base_monotonic_rchitecture(args)
+    base_monotonic_architecture(args)
 
 
 # parameters used in the "Attention Is All You Need" paper (Vaswani et al., 2017)
 @register_model_architecture(
-    'transformer_monotonic',
-    'transformer_monotonic_vaswani_wmt_en_de_big'
+    "transformer_monotonic", "transformer_monotonic_vaswani_wmt_en_de_big"
 )
 def transformer_monotonic_vaswani_wmt_en_de_big(args):
     transformer_vaswani_wmt_en_de_big(args)
 
 
 @register_model_architecture(
-    'transformer_monotonic',
-    'transformer_monotonic_vaswani_wmt_en_fr_big'
+    "transformer_monotonic", "transformer_monotonic_vaswani_wmt_en_fr_big"
 )
 def transformer_monotonic_vaswani_wmt_en_fr_big(args):
     transformer_monotonic_vaswani_wmt_en_fr_big(args)
 
 
 @register_model_architecture(
-    'transformer_unidirectional',
-    'transformer_unidirectional_iwslt_de_en'
+    "transformer_unidirectional", "transformer_unidirectional_iwslt_de_en"
 )
 def transformer_unidirectional_iwslt_de_en(args):
     transformer_iwslt_de_en(args)
+
+
+@register_model_architecture("transformer_monotonic", "transformer_monotonic_tiny")
+def monotonic_tiny_architecture(args):
+    tiny_architecture(args)
+    base_monotonic_architecture(args)
