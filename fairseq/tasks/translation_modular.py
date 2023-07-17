@@ -3,6 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+from dataclasses import dataclass, field
 import torch
 import logging
 
@@ -10,7 +11,8 @@ import numpy as np
 
 from fairseq import metrics, utils
 from fairseq.tasks import register_task
-from fairseq.tasks.translation import TranslationTask
+from fairseq.tasks.translation import TranslationConfig, TranslationTask
+
 
 _EPS = 1e-9
 
@@ -18,7 +20,7 @@ _EPS = 1e-9
 logger = logging.getLogger(__name__)
 
 
-@register_task('translation_modular')
+@register_task("translation_modular", dataclass=TranslationConfig)
 class TranslationModularTask(TranslationTask):
     """
     Translate from one (source) language to another (target) language.
@@ -47,11 +49,6 @@ class TranslationModularTask(TranslationTask):
             if any([(label not in log) for log in logging_outputs]):
                 continue
 
-            def compute_batch_entropy(meters):
-                probs = meters.get('_' + label)
-                if probs is not None:
-                    return (-probs * np.log(probs + _EPS)).mean()
-
             probs = torch.cat([log.get(label) for log in logging_outputs], 0).cpu()
             sel_entropy = (-probs * torch.log(probs + _EPS)).mean()
 
@@ -63,12 +60,13 @@ class TranslationModularTask(TranslationTask):
             metrics.log_scalar(coder + '_ctrl_batch_entropy', np.array(batch_entropy))
 
     def _inference_with_bleu(self, generator, sample, model):
+        # TODO: can we just call the parent class method and get the modular mask examples?
         import sacrebleu
 
         def decode(toks, escape_unk=False):
             s = self.tgt_dict.string(
                 toks.int().cpu(),
-                self.args.eval_bleu_remove_bpe,
+                self.cfg.eval_bleu_remove_bpe,
                 # The default unknown string in fairseq is `<unk>`, but
                 # this is tokenized by sacrebleu as `< unk >`, inflating
                 # BLEU scores. Instead, we use a somewhat more verbose
@@ -82,26 +80,28 @@ class TranslationModularTask(TranslationTask):
                 s = self.tokenizer.decode(s)
             return s
 
-        gen_out = self.inference_step(generator, [model], sample, None)
+        gen_out = self.inference_step(generator, [model], sample, prefix_tokens=None)
         hyps, refs = [], []
         # TODO: get the mask keys from the model
         modular_masks = { key : [] for key in ['encoder', 'decoder', 'enc_dec'] if "{}_mask" in gen_out[0][0] }
         for i in range(len(gen_out)):
             hyps.append(decode(gen_out[i][0]['tokens']))
-            refs.append(decode(
-                utils.strip_pad(sample['target'][i], self.tgt_dict.pad()),
-                escape_unk=True,  # don't count <unk> as matches to the hypo
-            ))
+            refs.append(
+                decode(
+                    utils.strip_pad(sample['target'][i], self.tgt_dict.pad()),
+                    escape_unk=True,  # don't count <unk> as matches to the hypo
+                )
+            )
             for key in modular_masks:
                 assert key in gen_out[i][0]
                 modular_masks[key].append(gen_out[i][0][key])
 
-        if self.args.eval_bleu_print_samples:
+        if self.cfg.eval_bleu_print_samples:
             logger.info('example hypothesis: ' + hyps[0])
             logger.info('example reference: ' + refs[0])
             for key in modular_masks:
                 logger.info('example ({}) modular mask: {}'.format(key, modular_masks[key]))
-        if self.args.eval_tokenized_bleu:
+        if self.cfg.eval_tokenized_bleu:
             return (
                 sacrebleu.corpus_bleu(hyps, [refs], tokenize='none'),
                 sacrebleu.corpus_ter(hyps, [refs]),

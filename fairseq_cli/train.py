@@ -342,7 +342,7 @@ def train(
             # HACK: We want to pass the epoch number to the criterion through the samples
             for s in samples:
                 s["epoch_num"] = progress.wrapped_bar.epoch
-            samples = [add_fixed_mask_to_input(s, args) for s in samples]
+            samples = [add_fixed_mask_to_input(s, cfg) for s in samples]
             log_output = trainer.train_step(samples)
 
         if log_output is not None:  # not OOM, overflow, ...
@@ -534,7 +534,7 @@ def validate(
                     and i > cfg.dataset.max_valid_steps
                 ):
                     break
-                sample = add_fixed_mask_to_input(sample, args)
+                sample = add_fixed_mask_to_input(sample, cfg)
                 trainer.valid_step(sample)
 
         # log validation stats
@@ -565,6 +565,13 @@ def get_valid_stats(
             checkpoint_utils.save_checkpoint.best,
             stats[cfg.checkpoint.best_checkpoint_metric],
         )
+    if getattr(cfg, "print_best_selection_stats", False):
+        sel_stats = trainer.model.get_best_selection_stats()
+        res = [" ".join(["{}-{}".format(k, v) for k, v in sel_stats["encoder"].items()])]
+        if sel_stats["decoder"] is not None:
+            res.append(" ".join(["{}-{}".format(k, v) for k, v in sel_stats["decoder"].items()]))
+        stats["best_selection_stats"] = ";".join(res)
+
     return stats
 
 

@@ -250,6 +250,10 @@ class CommonConfig(FairseqDataclass):
             "help": "path to run plasma_store, defaults to /tmp/plasma. Paths outside /tmp tend to fail."
         },
     )
+    module_ctrl_fixed_mask: Optional[str] = field(
+        default=None,
+        metadata={"help": "TODO"},
+    )
 
 
 @dataclass
@@ -777,6 +781,13 @@ class CheckpointConfig(FairseqDataclass):
         },
     )
     model_parallel_size: int = II("common.model_parallel_size")
+    parameter_freeze_substr: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "user provided module mask that should be used instead of module"
+            " controller output"
+        },
+    )
 
 
 @dataclass
@@ -951,6 +962,14 @@ class GenerationConfig(FairseqDataclass):
             "(valid options are: hard, soft, otherwise treated as hard alignment)",
             "argparse_const": "hard",
         },
+    )
+    print_module_mask: bool = field(
+        default=False,
+        metadata={"help": "print module mask"},
+    )
+    print_module_probs: bool = field(
+        default=False,
+        metadata={"help": "print module mask probabilities"},
     )
     print_step: bool = field(
         default=False,

@@ -236,7 +236,7 @@ class TranslationConfig(FairseqDataclass):
     eval_bleu_args: Optional[str] = field(
         default="{}",
         metadata={
-            "help": 'generation args for BLUE scoring, e.g., \'{"beam": 4, "lenpen": 0.6}\', as JSON string'
+            "help": "generation args for BLUE scoring, e.g., '{\"beam\": 4, \"lenpen\": 0.6}', as JSON string"
         },
     )
     eval_bleu_detok: str = field(
@@ -263,6 +263,13 @@ class TranslationConfig(FairseqDataclass):
     eval_bleu_print_samples: bool = field(
         default=False, metadata={"help": "print sample generations during validation"}
     )
+    eval_acc: bool = field(
+        default=False, metadata={"help": "evaluation with Accuracy scores"}
+    )
+    eval_ter: bool = field(
+        default=False, metadata={"help": "evaluation with TER scores"}
+    )
+
 
 
 @register_task("translation", dataclass=TranslationConfig)
@@ -369,11 +376,13 @@ class TranslationTask(FairseqTask):
     def build_model(self, cfg, from_checkpoint=False):
         model = super().build_model(cfg, from_checkpoint)
         if self.cfg.eval_bleu:
+            logger.info(self.cfg.eval_bleu_detok_args)
             detok_args = json.loads(self.cfg.eval_bleu_detok_args)
             self.tokenizer = encoders.build_tokenizer(
                 Namespace(tokenizer=self.cfg.eval_bleu_detok, **detok_args)
             )
 
+            logger.info(self.cfg.eval_bleu_args)
             gen_args = json.loads(self.cfg.eval_bleu_args)
             self.sequence_generator = self.build_generator(
                 [model], Namespace(**gen_args)
@@ -384,16 +393,16 @@ class TranslationTask(FairseqTask):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
         if self.cfg.eval_bleu:
             bleu, ter, acc = self._inference_with_bleu(self.sequence_generator, sample, model)
-            logging_output["_bleu_sys_len"] = bleu.sys_len
-            logging_output["_bleu_ref_len"] = bleu.ref_len
+            logging_output['_bleu_sys_len'] = bleu.sys_len
+            logging_output['_bleu_ref_len'] = bleu.ref_len
             # we split counts into separate entries so that they can be
             # summed efficiently across workers using fast-stat-sync
             assert len(bleu.counts) == EVAL_BLEU_ORDER
             for i in range(EVAL_BLEU_ORDER):
-                logging_output["_bleu_counts_" + str(i)] = bleu.counts[i]
-                logging_output["_bleu_totals_" + str(i)] = bleu.totals[i]
-            logging_output["accuracy"] = acc
-            logging_output["ter"] = ter.score
+                logging_output['_bleu_counts_' + str(i)] = bleu.counts[i]
+                logging_output['_bleu_totals_' + str(i)] = bleu.totals[i]
+            logging_output['accuracy'] = acc
+            logging_output['ter'] = ter.score
         return loss, sample_size, logging_output
 
     def reduce_metrics(self, logging_outputs, criterion):
@@ -447,11 +456,11 @@ class TranslationTask(FairseqTask):
                     )
                     return round(bleu.score, 2)
 
-                metrics.log_derived("bleu", compute_bleu)
-        if self.args.eval_acc:
-            metrics.log_scalar("accuracy", sum_logs("accuracy"))
-        if self.args.eval_ter:
-            metrics.log_scalar("ter", sum_logs("ter"))
+                metrics.log_derived('bleu', compute_bleu)
+        if self.cfg.eval_acc:
+            metrics.log_scalar('accuracy', sum_logs('accuracy'))
+        if self.cfg.eval_ter:
+            metrics.log_scalar('ter', sum_logs('ter'))
 
     def max_positions(self):
         """Return the max sentence length allowed by the task."""

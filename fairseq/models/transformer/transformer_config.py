@@ -19,6 +19,8 @@ DEFAULT_MAX_TARGET_POSITIONS = 1024
 
 DEFAULT_MIN_PARAMS_TO_WRAP = int(1e8)
 
+DEFAULT_MAX_DEPTH = 128
+
 _NAME_PARSER = r"(decoder|encoder|quant_noise)_(.*)"
 
 
@@ -339,3 +341,70 @@ class TransformerConfig(FairseqDataclass):
             return config
         else:
             return args
+
+
+@dataclass
+class ModularCtrlConfig(FairseqDataclass):
+    hidden_dim: Optional[int] = II("model.decoder.embed_dim")
+    hidden_depth: int = field(
+        default=0, metadata={"help": "controller hidden layer depth"}
+    )
+    word_dropout: float = field(
+        default=0., metadata={"help": "TODO"}
+    )
+    use_hard_samples: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+    add_output_bias: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+    input_average_pooling: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+
+    encoder_attn: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+    encoder_ffn: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+    decoder_attn: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+    encdec_attn: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+    decoder_ffn: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+
+
+@dataclass
+class EncDecModularConfig(EncDecBaseConfig):
+    ffn_modules: int = field(
+        default=1, metadata={"help": "TODO"}
+    )
+
+
+@dataclass
+class DecoderModularConfig(EncDecModularConfig):
+    input_dim: int = II("model.decoder.embed_dim")
+    output_dim: int = field(
+        default=II("model.decoder.embed_dim"),
+        metadata={
+            "help": "decoder output dimension (extra linear layer if different from decoder embed dim)"
+        },
+    )
+
+    def __post_init__(self):
+        #  II doesn't work if we are just creating the object outside of hydra so fix that
+        if self.input_dim == II("model.decoder.embed_dim"):
+            self.input_dim = self.embed_dim
+        if self.output_dim == II("model.decoder.embed_dim"):
+            self.output_dim = self.embed_dim
+
+@dataclass
+class TransformerModularConfig(TransformerConfig):
+    module_ctrl: ModularCtrlConfig = ModularCtrlConfig()
+    encoder: EncDecModularConfig = EncDecModularConfig()
+    decoder: DecoderModularConfig = DecoderModularConfig()

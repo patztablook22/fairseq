@@ -317,11 +317,11 @@ def main(cfg: FairseqConfig):
                     # TODO: get the mask keys directly from the model
                     for key in hypo:
                         if "_mask" in key:
-                            print('M-{}-{}\t{}'.format(key, id, hypo[key]))
+                            print("M{}-{}\t{}".format(key, id, hypo[key]))
                 if cfg.generation.print_module_probs:
                     for key in hypo:
                         if "_probs" in key:
-                            print('Probs-{}-{}\t{}'.format(key, id, hypo[key]))
+                            print("M{}-probs-{}\t{}".format(key, id, hypo[key]))
 
         # update running id_ counter
         start_id += len(inputs)

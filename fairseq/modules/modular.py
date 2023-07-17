@@ -1,18 +1,10 @@
-import math
-from typing import Dict, NamedTuple, Optional
-import logging
-import itertools
-import random
-import numpy as np
+from typing import Dict, Optional
 
 import torch
-import torch.nn.init as init
-import torch.nn.functional as F
 from torch import Tensor, nn
-from torch.distributions.categorical import Categorical
-from torch.nn import Parameter
 
-from fairseq.incremental_decoding_utils import with_incremental_state
+from fairseq.modules.fairseq_dropout import FairseqDropout
+from fairseq.models.fairseq_incremental_decoder import FairseqIncrementalDecoder
 
 
 _EPS = 1e-9
@@ -51,19 +43,7 @@ def gaussian_sigmoid(logits, temperature=1.0):
     return gaussian_sigmoid(logits, temperature)
 
 
-ModularCtrlOut = NamedTuple(
-    "ModularCtrlOut",
-    [
-        ("logits", Tensor),
-        ("sampled_probs", Tensor),
-        ("mask", Tensor),
-        ("padding_mask", Tensor),
-    ]
-)
-
-
-@with_incremental_state
-class ModularCtrl(nn.Module):
+class ModularCtrl(FairseqIncrementalDecoder):
     """
     Module controller for conditional computation.
 
@@ -80,45 +60,53 @@ class ModularCtrl(nn.Module):
         hidden_dim: size of the hidden layers
         word_dropout: a probability of dropping the whole input representation
             from the input sequence (see Iyyer et al., 2015)
-        hard_samples: apply hard thresholding (0 or 1) on the Gumbel-Softmax output
+        use_hard_samples: apply hard thresholding (0 or 1) on the Gumbel-Softmax output
         averaged_tokens: average the input sequence and produce a single mask
             for the whole sequence (in decoder, in a given timestep)
     """
-    def __init__(self,
-                 input_dim,
-                 n_modules,
-                 hidden_depth=0,
-                 hidden_dim=None,
-                 dropout=0.0,
-                 word_dropout=0.0,
-                 hard_samples=False,
-                 averaged_tokens=False,
-                 add_output_bias=False):
-        super().__init__()
-        self.input_dim = input_dim
-        self.hidden_dim = hidden_dim
-        self.hidden_depth = hidden_depth
-        self.hard_samples = hard_samples
-        self.averaged_tokens = averaged_tokens
-        self.add_output_bias = add_output_bias
-
+    def __init__(
+        self,
+        input_dim,
+        n_modules,
+        activation_fn,
+        hidden_depth=0,
+        hidden_dim=None,
+        dropout=0.0,
+        word_dropout=0.0,
+        bias=True,
+        add_output_bias=False,
+        dictionary=None,
+        use_hard_samples=False,
+        input_average_pooling=False,
+    ):
+        super().__init__(dictionary)
         self.n_modules = n_modules
 
-        modules = []
+        self.activation_fn = activation_fn
+        self.dropout_module = FairseqDropout(
+            dropout, module_name=self.__class__.__name__
+        )
+        self.word_dropout = word_dropout
+
+        self.layers = nn.ModuleList([])
         for _ in range(hidden_depth):
             if hidden_dim is None:
                 raise ValueError("controller hidden_dim cannot be NoneType if hidden_depth > 0")
-            modules.append(nn.Linear(input_dim, hidden_dim))
-            # TODO: change to GeLU?
-            # TODO: pass via parameter
-            modules.append(nn.ReLU())
-            modules.append(nn.Dropout(p=dropout))
+            self.layers.append(nn.Linear(input_dim, hidden_dim, bias=bias))
             input_dim = hidden_dim
-        self.fc_net = nn.Sequential(*modules)
 
-        self.dropout = dropout
-        self.word_dropout = word_dropout
-        self.out_proj = nn.Linear(input_dim, n_modules, bias=self.add_output_bias)
+        self.use_hard_samples = use_hard_samples
+        self.input_average_pooling = input_average_pooling
+
+        self.out_proj = nn.Linear(input_dim, n_modules, bias=add_output_bias)
+
+        self.init_incremental_state()
+
+    def fc_net(self, x: Tensor):
+        for layer in self.layers:
+            x = self.activation_fn(layer(x))
+            x = self.dropout_module(x)
+        return x
 
     def extract_features(self, x, padding_mask=None, future_mask=None):
         """Compute the pre-softmax representation."""
@@ -134,11 +122,12 @@ class ModularCtrl(nn.Module):
         input_mask = input_mask.float()
 
         # Word dropout described in Iyyer et al. (2015)
+        # TODO: can we just use FairseqDropout module instead?
         if self.training:
             input_mask *= torch.bernoulli(
                 torch.ones(input_mask.shape, device=x.device) * (1. - self.word_dropout))
 
-        if self.averaged_tokens:
+        if self.input_average_pooling:
             if future_mask is not None and future_mask.shape:
                 future_mask = future_mask.reshape(1, x_len, x_len, 1)
                 x *= input_mask.float()
@@ -158,7 +147,7 @@ class ModularCtrl(nn.Module):
         future_mask: Optional[Tensor] = None,
         incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]] = None,
         temperature=1.0
-    ) -> ModularCtrlOut:
+    ) -> Dict[str, Tensor]:
         """
         Compute a module mask based on the input sequence x.
 
@@ -195,7 +184,7 @@ class ModularCtrl(nn.Module):
 
         # We need previous states only when the current token mask is predicted
         # using the whole available sequence
-        if saved_state is not None and self.averaged_tokens:
+        if saved_state is not None and self.input_average_pooling:
             # (prev_x) saved states are stored with shape (bsz, seq_len, input_dim)
             if "prev_x" in saved_state:
                 prev_x = saved_state["prev_x"]
@@ -229,7 +218,7 @@ class ModularCtrl(nn.Module):
             sampled_probs = gumbel_sigmoid(logits, temperature)
             sampled_probs = ModularCtrl._mask_output_probs(sampled_probs, padding_mask)
             module_mask = sampled_probs
-            if self.hard_samples:
+            if self.use_hard_samples:
                 module_mask = (module_mask > 0.5).float()
                 module_mask = (module_mask - sampled_probs).detach() + sampled_probs
 
@@ -238,12 +227,12 @@ class ModularCtrl(nn.Module):
             sampled_probs = ModularCtrl._mask_output_probs(sampled_probs, padding_mask)
             module_mask = (sampled_probs > 0.5).float()
 
-        return ModularCtrlOut(
-            logits=logits,
-            sampled_probs=sampled_probs,
-            mask=module_mask,
-            padding_mask=padding_mask
-        )
+        return {
+            "logits": logits,
+            "sampled_probs": sampled_probs,
+            "mask": module_mask,
+            "padding_mask": padding_mask,
+        }
 
     @staticmethod
     def _append_prev_padding_mask(
@@ -291,7 +280,9 @@ class ModularCtrl(nn.Module):
 
     @torch.jit.export
     def reorder_incremental_state(
-        self, incremental_state: Dict[str, Dict[str, Optional[Tensor]]], new_order: Tensor
+        self,
+        incremental_state: Dict[str, Dict[str, Optional[Tensor]]],
+        new_order: Tensor
     ):
         """Reorder buffered internal state (for incremental generation)."""
         input_buffer = self._get_input_buffer(incremental_state)
@@ -302,6 +293,9 @@ class ModularCtrl(nn.Module):
                     input_buffer[k] = input_buffer_k.index_select(0, new_order)
             incremental_state = self._set_input_buffer(incremental_state, input_buffer)
         return incremental_state
+
+    def set_beam_size(self, beam_size):
+        self.beam_size = beam_size
 
     def _get_input_buffer(
         self, incremental_state: Optional[Dict[str, Dict[str, Optional[Tensor]]]]

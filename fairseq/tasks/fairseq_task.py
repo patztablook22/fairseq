@@ -415,7 +415,6 @@ class FairseqTask(object):
             SequenceGenerator,
             SequenceGeneratorWithAlignment,
             SequenceGeneratorWithModuleMask,
-            SequenceGeneratorWithAttentionWeights
         )
 
         # Choose search strategy. Defaults to Beam Search.

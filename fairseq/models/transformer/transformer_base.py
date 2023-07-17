@@ -14,7 +14,10 @@ import logging
 from fairseq import utils
 from fairseq.dataclass.utils import gen_parser_from_dataclass
 from fairseq.distributed import fsdp_wrap
-from fairseq.models import FairseqEncoderDecoderModel
+from fairseq.models import register_model
+from fairseq.models import (
+    FairseqEncoderDecoderModel,
+)
 from fairseq.models.transformer import (
     TransformerConfig,
     TransformerDecoderBase,
@@ -25,6 +28,7 @@ from fairseq.models.transformer import (
 logger = logging.getLogger(__name__)
 
 
+@register_model("transformer_base", dataclass=TransformerConfig)
 class TransformerModelBase(FairseqEncoderDecoderModel):
     """
     Transformer model from `"Attention Is All You Need" (Vaswani, et al, 2017)
