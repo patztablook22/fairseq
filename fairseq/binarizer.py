@@ -310,6 +310,35 @@ class AlignmentDatasetBinarizer(Binarizer):
         return ids
 
 
+class ImageDatasetBinarizer(Binarizer):
+    """
+    binarize by parsing a set of images (provided in a list of image filenames) and packing
+    them in a tensor (see utils.parse_image)
+    """
+
+    def __init__(
+        self,
+        image_parser: tp.Callable[[str], torch.IntTensor],
+    ) -> None:
+        super().__init__()
+        self.image_parser = image_parser
+
+    def binarize_line(
+        self,
+        line: str,
+        summary: BinarizeSummary,
+    ):
+        pixels = self.image_parser(line)
+        shape = torch.tensor(pixels.shape, dtype=torch.short)
+
+        pixels_flat = torch.cat([shape, pixels.contiguous().view(-1)])
+
+        summary.num_seq += 1
+        summary.num_tok += len(pixels_flat)
+
+        return pixels_flat
+
+
 class LegacyBinarizer:
     @classmethod
     def binarize(

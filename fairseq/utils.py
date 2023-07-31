@@ -2,7 +2,6 @@
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
-
 import argparse
 import collections
 import contextlib
@@ -18,6 +17,10 @@ from typing import TYPE_CHECKING, Callable, Dict, List, Optional
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+
+from PIL import Image
+import torchvision.transforms as transforms
+
 
 if TYPE_CHECKING:
     from fairseq.modules.multihead_attention import MultiheadAttention
@@ -653,6 +656,27 @@ def parse_alignment(line):
         parsed_alignment[2 * idx] = int(src_idx)
         parsed_alignment[2 * idx + 1] = int(tgt_idx)
     return parsed_alignment
+
+
+def parse_image(line):
+    """
+    Parses a single line from the image_path file. Returns the loaded image.
+
+    Args:
+        line (str): String containing the path to a jpg image
+            The original image tensor has shape(channels, height, width).
+
+    Returns:
+        torch.IntTensor: image representation of shape (3, -1, -1)
+    """
+    img_path = line.strip()
+    transform = transforms.Compose([transforms.PILToTensor()])
+
+    img = transform(Image.open(img_path)).to(torch.short)
+
+    if img.dim() == 2:
+        img = torch.stack([img] * 3, axis=0)
+    return img
 
 
 def get_token_to_word_mapping(tokens, exclude_list):

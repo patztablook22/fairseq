@@ -33,6 +33,7 @@ from .lm_context_window_dataset import LMContextWindowDataset
 from .lru_cache_dataset import LRUCacheDataset
 from .mask_tokens_dataset import MaskTokensDataset
 from .monolingual_dataset import MonolingualDataset
+from .multimodal_language_pair_dataset import MultimodalLanguagePairDataset
 from .multi_corpus_sampled_dataset import MultiCorpusSampledDataset
 from .nested_dictionary_dataset import NestedDictionaryDataset
 from .noising import NoisingDataset
@@ -106,6 +107,7 @@ __all__ = [
     "MMapIndexedDataset",
     "MonolingualDataset",
     "MultiCorpusSampledDataset",
+    "MultimodalLanguagePairDataset",
     "NestedDictionaryDataset",
     "NoisingDataset",
     "NumelDataset",

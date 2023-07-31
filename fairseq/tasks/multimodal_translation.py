@@ -1,34 +1,31 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-#
-# This source code is licensed under the MIT license found in the
-# LICENSE file in the root directory of this source tree.
+# Copyright 2022 The OFA-Sys Team. 
+# All rights reserved.
+# This source code is licensed under the Apache 2.0 license 
+# found in the LICENSE file in the root directory.
 
 from dataclasses import dataclass, field
 import itertools
 import json
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 from argparse import Namespace
-from omegaconf import II
+from collections import OrderedDict
+from omegaconf import OmegaConf
 
 import numpy as np
 from fairseq import utils
 from fairseq.logging import metrics
 from fairseq.data import (
-    AppendTokenDataset,
-    ConcatDataset,
-    LanguagePairDataset,
-    PrependTokenDataset,
-    StripTokenDataset,
-    TruncateDataset,
+    MultimodalLanguagePairDataset,
     data_utils,
-    encoders,
     indexed_dataset,
 )
-from fairseq.data.indexed_dataset import get_available_dataset_impl
-from fairseq.dataclass import ChoiceEnum, FairseqDataclass
-from fairseq.tasks import FairseqTask, register_task
+from fairseq.tasks import register_task
+from fairseq.tasks.translation import TranslationConfig, TranslationTask
+from omegaconf import OmegaConf
+
+from fairseq.cider.pyciderevalcap.ciderD.ciderD import CiderD
 
 
 EVAL_BLEU_ORDER = 4
@@ -37,7 +34,7 @@ EVAL_BLEU_ORDER = 4
 logger = logging.getLogger(__name__)
 
 
-def load_langpair_dataset(
+def load_multimodal_langpair_dataset(
     data_path,
     split,
     src,
@@ -59,6 +56,8 @@ def load_langpair_dataset(
     shuffle=True,
     pad_to_multiple=1,
     prepend_bos_src=None,
+    patch_image_size=224,
+    imagenet_default_mean_and_std=False,
 ):
     def split_exists(split, src, tgt, lang, data_path):
         filename = os.path.join(data_path, "{}.{}-{}.{}".format(split, src, tgt, lang))
@@ -153,8 +152,15 @@ def load_langpair_dataset(
                 align_path, None, dataset_impl
             )
 
+    img_path = os.path.join(data_path, "{}.image.{}-{}".format(split, src, tgt))
+    if indexed_dataset.dataset_exists(img_path, impl=dataset_impl):
+        img_dataset = data_utils.load_indexed_dataset(
+            img_path, None, dataset_impl
+        )
+
     tgt_dataset_sizes = tgt_dataset.sizes if tgt_dataset is not None else None
-    return LanguagePairDataset(
+    return MultimodalLanguagePairDataset(
+        img_dataset,
         src_dataset,
         src_dataset.sizes,
         src_dict,
@@ -168,182 +174,103 @@ def load_langpair_dataset(
         num_buckets=num_buckets,
         shuffle=shuffle,
         pad_to_multiple=pad_to_multiple,
+        patch_image_size=patch_image_size,
+        imagenet_default_mean_and_std=imagenet_default_mean_and_std,
     )
 
 
 @dataclass
-class TranslationConfig(FairseqDataclass):
-    data: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "colon separated path to data directories list, will be iterated upon during epochs "
-            "in round-robin manner; however, valid and test data are always in the first directory "
-            "to avoid the need for repeating them in all directories"
-        },
-    )
-    source_lang: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "source language",
-            "argparse_alias": "-s",
-        },
-    )
-    target_lang: Optional[str] = field(
-        default=None,
-        metadata={
-            "help": "target language",
-            "argparse_alias": "-t",
-        },
-    )
-    load_alignments: bool = field(
-        default=False, metadata={"help": "load the binarized alignments"}
-    )
-    left_pad_source: bool = field(
-        default=True, metadata={"help": "pad the source on the left"}
-    )
-    left_pad_target: bool = field(
-        default=False, metadata={"help": "pad the target on the left"}
-    )
-    max_source_positions: int = field(
-        default=1024, metadata={"help": "max number of tokens in the source sequence"}
-    )
-    max_target_positions: int = field(
-        default=1024, metadata={"help": "max number of tokens in the target sequence"}
-    )
-    upsample_primary: int = field(
-        default=-1, metadata={"help": "the amount of upsample primary dataset"}
-    )
-    truncate_source: bool = field(
-        default=False, metadata={"help": "truncate source to max-source-positions"}
-    )
-    num_batch_buckets: int = field(
-        default=0,
-        metadata={
-            "help": "if >0, then bucket source and target lengths into "
-            "N buckets and pad accordingly; this is useful on TPUs to minimize the number of compilations"
-        },
-    )
-    train_subset: str = II("dataset.train_subset")
-    dataset_impl: Optional[ChoiceEnum(get_available_dataset_impl())] = II(
-        "dataset.dataset_impl"
-    )
-    required_seq_len_multiple: int = II("dataset.required_seq_len_multiple")
-
-    # options for reporting BLEU during validation
+class MultimodalTranslationConfig(TranslationConfig):
     eval_bleu: bool = field(
         default=False, metadata={"help": "evaluation with BLEU scores"}
     )
-    eval_bleu_args: Optional[str] = field(
-        default="{}",
-        metadata={
-            "help": "generation args for BLUE scoring, e.g., '{\"beam\": 4, \"lenpen\": 0.6}', as JSON string"
-        },
-    )
-    eval_bleu_detok: str = field(
-        default="space",
-        metadata={
-            "help": "detokenize before computing BLEU (e.g., 'moses'); required if using --eval-bleu; "
-            "use 'space' to disable detokenization; see fairseq.data.encoders for other options"
-        },
-    )
-    eval_bleu_detok_args: Optional[str] = field(
-        default="{}",
-        metadata={"help": "args for building the tokenizer, if needed, as JSON string"},
-    )
-    eval_tokenized_bleu: bool = field(
-        default=False, metadata={"help": "compute tokenized BLEU instead of sacrebleu"}
-    )
-    eval_bleu_remove_bpe: Optional[str] = field(
-        default=None,
+    eval_tokenized_bleu: bool = field( 
+        default=False, metadata={"help": "compute tokenized BLEU instead of sacrebleu"} 
+    ) 
+    eval_bleu_remove_bpe: Optional[str] = field( 
+        default=None, 
         metadata={
             "help": "remove BPE before computing BLEU",
             "argparse_const": "@@ ",
         },
     )
-    eval_bleu_print_samples: bool = field(
+    eval_cider: bool = field(
+        default=False, metadata={"help": "evaluation with CIDEr scores"}
+    )
+    eval_cider_cached_tokens: Optional[str] = field(
+        default=None,
+        metadata={"help": "path to cached cPickle file used to calculate CIDEr scores"},
+    )
+
+    eval_detok: str = field(
+        default="space",
+        metadata={
+            "help": "detokenize before computing BLEU or CIDER (e.g., 'moses'); required if using --eval-bleu; "
+            "use 'space' to disable detokenization; see fairseq.data.encoders for other options"
+        },
+    )
+    eval_detok_args: Optional[str] = field(
+        default="{}",
+        metadata={"help": "args for building the tokenizer, if needed, as JSON string"},
+    )
+    eval_args: Optional[str] = field(
+        default='{}',
+        metadata={
+            "help": 'generation args for BLUE or CIDEr scoring, e.g., \'{"beam": 4, "lenpen": 0.6}\', as JSON string'
+        },
+    )
+    eval_print_samples: bool = field(
         default=False, metadata={"help": "print sample generations during validation"}
     )
-    eval_acc: bool = field(
-        default=False, metadata={"help": "evaluation with Accuracy scores"}
+
+    imagenet_default_mean_and_std: Any = field(
+        default=(0.5, 0.5, 0.5),
+        metadata={"help": "Imagenet normalization values."}
     )
-    eval_ter: bool = field(
-        default=False, metadata={"help": "evaluation with TER scores"}
+
+    patch_image_size: int = field(
+        default=224,
+        metadata={"help": "Size of the resized image input."}
+    )
+
+    scst: bool = field(
+        default=False, metadata={"help": "Self-critical sequence training"}
+    )
+    scst_args: str = field(
+        default='{}',
+        metadata={
+            "help": 'generation args for Self-critical sequence training, as JSON string'
+        },
     )
 
 
-
-@register_task("translation", dataclass=TranslationConfig)
-class TranslationTask(FairseqTask):
-    """
-    Translate from one (source) language to another (target) language.
-
-    Args:
-        src_dict (~fairseq.data.Dictionary): dictionary for the source language
-        tgt_dict (~fairseq.data.Dictionary): dictionary for the target language
-
-    .. note::
-
-        The translation task is compatible with :mod:`fairseq-train`,
-        :mod:`fairseq-generate` and :mod:`fairseq-interactive`.
-    """
-
-    cfg: TranslationConfig
-
-    def __init__(self, cfg: TranslationConfig, src_dict, tgt_dict):
-        super().__init__(cfg)
-        self.src_dict = src_dict
-        self.tgt_dict = tgt_dict
-
-    @classmethod
-    def setup_task(cls, cfg: TranslationConfig, **kwargs):
-        """Setup the task (e.g., load dictionaries).
-
-        Args:
-            args (argparse.Namespace): parsed command-line arguments
-        """
-
-        paths = utils.split_paths(cfg.data)
-        assert len(paths) > 0
-        # find language pair automatically
-        if cfg.source_lang is None or cfg.target_lang is None:
-            cfg.source_lang, cfg.target_lang = data_utils.infer_language_pair(paths[0])
-        if cfg.source_lang is None or cfg.target_lang is None:
-            raise Exception(
-                "Could not infer language pair, please provide it explicitly"
+@register_task("multimodal_translation", dataclass=MultimodalTranslationConfig)
+class MultimodalTranslationTask(TranslationTask):
+    def __init__(self, cfg: MultimodalTranslationConfig, src_dict, tgt_dict):
+        super().__init__(cfg, src_dict, tgt_dict)
+        if isinstance(cfg.imagenet_default_mean_and_std, str):
+            self.imagenet_default_mean_and_std = eval(
+                cfg.imagenet_default_mean_and_std
             )
-
-        # load dictionaries
-        src_dict = cls.load_dictionary(
-            os.path.join(paths[0], "dict.{}.txt".format(cfg.source_lang))
-        )
-        tgt_dict = cls.load_dictionary(
-            os.path.join(paths[0], "dict.{}.txt".format(cfg.target_lang))
-        )
-        assert src_dict.pad() == tgt_dict.pad()
-        assert src_dict.eos() == tgt_dict.eos()
-        assert src_dict.unk() == tgt_dict.unk()
-        logger.info("[{}] dictionary: {} types".format(cfg.source_lang, len(src_dict)))
-        logger.info("[{}] dictionary: {} types".format(cfg.target_lang, len(tgt_dict)))
-
-        return cls(cfg, src_dict, tgt_dict)
+        else:
+            self.imagenet_default_mean_and_std = OmegaConf.to_container(
+                self.cfg.imagenet_default_mean_and_std
+            )
+        self.patch_image_size = cfg.patch_image_size
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
-        """Load a given dataset split.
-
-        Args:
-            split (str): name of the split (e.g., train, valid, test)
-        """
         paths = utils.split_paths(self.cfg.data)
         assert len(paths) > 0
+
         if split != self.cfg.train_subset:
             # if not training data set, use the first shard for valid and test
             paths = paths[:1]
         data_path = paths[(epoch - 1) % len(paths)]
 
-        # infer langcode
         src, tgt = self.cfg.source_lang, self.cfg.target_lang
 
-        self.datasets[split] = load_langpair_dataset(
+        # TODO: multimodal langpair dataset or separate?
+        self.datasets[split] = load_multimodal_langpair_dataset(
             data_path,
             split,
             src,
@@ -362,50 +289,97 @@ class TranslationTask(FairseqTask):
             num_buckets=self.cfg.num_batch_buckets,
             shuffle=(split != "test"),
             pad_to_multiple=self.cfg.required_seq_len_multiple,
+            imagenet_default_mean_and_std=self.imagenet_default_mean_and_std,
+            patch_image_size=self.patch_image_size,
         )
 
-    def build_dataset_for_inference(self, src_tokens, src_lengths, constraints=None):
-        return LanguagePairDataset(
+    def build_dataset_for_inference(self, src_tokens, src_lengths, images=None, constraints=None):
+        return MultimodalLanguagePairDataset(
+            images,
             src_tokens,
             src_lengths,
             self.source_dictionary,
             tgt_dict=self.target_dictionary,
             constraints=constraints,
+            imagenet_default_mean_and_std=self.imagenet_default_mean_and_std,
+            patch_image_size=self.patch_image_size,
         )
 
-    def build_model(self, cfg, from_checkpoint=False):
-        model = super().build_model(cfg, from_checkpoint)
-        if self.cfg.eval_bleu:
-            logger.info(self.cfg.eval_bleu_detok_args)
-            detok_args = json.loads(self.cfg.eval_bleu_detok_args)
-            self.tokenizer = encoders.build_tokenizer(
-                Namespace(tokenizer=self.cfg.eval_bleu_detok, **detok_args)
-            )
 
-            logger.info(self.cfg.eval_bleu_args)
-            gen_args = json.loads(self.cfg.eval_bleu_args)
+    def build_model(self, cfg):
+        model = super().build_model(cfg)
+        if self.cfg.eval_bleu or self.cfg.eval_cider:
+            gen_args = json.loads(self.cfg.eval_args)
             self.sequence_generator = self.build_generator(
                 [model], Namespace(**gen_args)
             )
+            if self.cfg.eval_cider:
+                self.CiderD_scorer = CiderD(df=self.cfg.eval_cider_cached_tokens)
+        if self.cfg.scst:
+            raise ValueError("SCST generation is currently not supported...")
+            scst_args = json.loads(self.cfg.scst_args)
+            self.scst_generator = self.build_generator(
+                [model], Namespace(**scst_args)
+            )
+
         return model
+
+    def _calculate_cider_scores(self, gen_res, gt_res):
+        '''
+        gen_res: generated captions, list of str
+        gt_idx: list of int, of the same length as gen_res
+        gt_res: ground truth captions, list of list of str.
+            gen_res[i] corresponds to gt_res[gt_idx[i]]
+            Each image can have multiple ground truth captions
+        '''
+        gen_res_size = len(gen_res)
+
+        res = OrderedDict()
+        for i in range(gen_res_size):
+            res[i] = [gen_res[i].strip()]
+
+        gts = OrderedDict()
+        gt_res_ = [
+            [gt_res[i][j].strip() for j in range(len(gt_res[i]))]
+            for i in range(len(gt_res))
+        ]
+        for i in range(gen_res_size):
+            gts[i] = gt_res_[i]
+
+        res_ = [{'image_id': i, 'caption': res[i]} for i in range(len(res))]
+        _, scores = self.CiderD_scorer.compute_score(gts, res_)
+        return scores
 
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
-        if self.cfg.eval_bleu or self.cfg.eval_acc or self.cfg.eval_ter:
-            metrics = self._inference_with_bleu(self.sequence_generator, sample, model)
-            if self.cfg.eval_bleu:
+        if (
+            self.cfg.eval_bleu
+            or self.cfg.eval_cider 
+            or self.cfg.eval_acc
+            or self.cfg.eval_ter
+        ):
+            metrics = self._inference(self.sequence_generator, sample, model)
+
+            if cfg.eval_bleu:
                 logging_output["_bleu_sys_len"] = metrics["bleu"].sys_len
                 logging_output["_bleu_ref_len"] = metrics["bleu"].ref_len
                 # we split counts into separate entries so that they can be
                 # summed efficiently across workers using fast-stat-sync
-                assert len(metrics["bleu"].counts) == EVAL_BLEU_ORDER
+                assert len(bleu.counts) == EVAL_BLEU_ORDER
                 for i in range(EVAL_BLEU_ORDER):
                     logging_output["_bleu_counts_" + str(i)] = metrics["bleu"].counts[i]
                     logging_output["_bleu_totals_" + str(i)] = metrics["bleu"].totals[i]
+
+            if self.cfg.eval_cider:
+                logging_output["_cider_score_sum"] = metrics["cider"].sum()
+                logging_output["_cider_cnt"] = metrics["cider"].size
+
             if self.cfg.eval_acc:
                 logging_output["accuracy"] = metrics["accuracy"]
+
             if self.cfg.eval_ter:
                 logging_output["ter"] = metrics["ter"].score
+        
         return loss, sample_size, logging_output
 
     def reduce_metrics(self, logging_outputs, criterion):
@@ -413,7 +387,6 @@ class TranslationTask(FairseqTask):
 
         def sum_logs(key):
             import torch
-
             result = sum(log.get(key, 0) for log in logging_outputs)
             if torch.is_tensor(result):
                 result = result.cpu()
@@ -437,12 +410,10 @@ class TranslationTask(FairseqTask):
 
                     try:
                         from sacrebleu.metrics import BLEU
-
                         comp_bleu = BLEU.compute_bleu
                     except ImportError:
-                        # compatibility API for sacrebleu 1.x
                         import sacrebleu
-
+                        # compatibility API for sacrebleu 1.x
                         comp_bleu = sacrebleu.compute_bleu
 
                     fn_sig = inspect.getfullargspec(comp_bleu)[0]
@@ -453,13 +424,24 @@ class TranslationTask(FairseqTask):
                     bleu = comp_bleu(
                         correct=meters["_bleu_counts"].sum,
                         total=meters["_bleu_totals"].sum,
-                        sys_len=int(meters["_bleu_sys_len"].sum),
-                        ref_len=int(meters["_bleu_ref_len"].sum),
-                        **smooth,
+                        sys_len=meters["_bleu_sys_len"].sum,
+                        ref_len=meters["_bleu_ref_len"].sum,
+                        **smooth
                     )
                     return round(bleu.score, 2)
 
-                metrics.log_derived('bleu', compute_bleu)
+                metrics.log_derived("bleu", compute_bleu)
+
+        if self.cfg.eval_cider:
+            def compute_cider(meters):
+                cider = meters["_cider_score_sum"].sum / meters["_cider_cnt"].sum
+                cider = cider if isinstance(cider, float) else cider.item()
+                return round(cider, 3)
+
+            if sum_logs("_cider_cnt") > 0:
+                metrics.log_scalar("_cider_score_sum", sum_logs("_cider_score_sum"))
+                metrics.log_scalar("_cider_cnt", sum_logs("_cider_cnt"))
+                metrics.log_derived("cider", compute_cider)
 
         if self.cfg.eval_acc:
             metrics.log_scalar('accuracy', sum_logs('accuracy'))
@@ -467,27 +449,12 @@ class TranslationTask(FairseqTask):
         if self.cfg.eval_ter:
             metrics.log_scalar('ter', sum_logs('ter'))
 
-    def max_positions(self):
-        """Return the max sentence length allowed by the task."""
-        return (self.cfg.max_source_positions, self.cfg.max_target_positions)
-
-    @property
-    def source_dictionary(self):
-        """Return the source :class:`~fairseq.data.Dictionary`."""
-        return self.src_dict
-
-    @property
-    def target_dictionary(self):
-        """Return the target :class:`~fairseq.data.Dictionary`."""
-        return self.tgt_dict
-
-    def _inference_with_bleu(self, generator, sample, model):
+    def _inference(self, generator, sample, model):
         import sacrebleu
 
         def decode(toks, escape_unk=False):
             s = self.tgt_dict.string(
                 toks.int().cpu(),
-                self.cfg.eval_bleu_remove_bpe,
                 # The default unknown string in fairseq is `<unk>`, but
                 # this is tokenized by sacrebleu as `< unk >`, inflating
                 # BLEU scores. Instead, we use a somewhat more verbose
@@ -495,11 +462,11 @@ class TranslationTask(FairseqTask):
                 # reference, but doesn't get split into multiple tokens.
                 unk_string=("UNKNOWNTOKENINREF" if escape_unk else "UNKNOWNTOKENINHYP"),
             )
-            if self.tokenizer:
-                s = self.tokenizer.decode(s)
+            if self.bpe:
+                s = self.bpe.decode(s)
             return s
 
-        gen_out = self.inference_step(generator, [model], sample, prefix_tokens=None)
+        gen_out = self.inference_step(generator, [model], sample)
         hyps, refs = [], []
         for i in range(len(gen_out)):
             hyps.append(decode(gen_out[i][0]["tokens"]))
@@ -509,17 +476,19 @@ class TranslationTask(FairseqTask):
                     escape_unk=True,  # don't count <unk> as matches to the hypo
                 )
             )
-        if self.cfg.eval_bleu_print_samples:
+        if self.cfg.eval_print_samples:
             logger.info("example hypothesis: " + hyps[0])
             logger.info("example reference: " + refs[0])
         if self.cfg.eval_tokenized_bleu:
             return {
                 "bleu" : sacrebleu.corpus_bleu(hyps, [refs], tokenize="none"),
+                "cider" : self._calculate_cider_scores(hyps, refs),
                 "ter" : sacrebleu.corpus_ter(hyps, [refs]),
-                "accuracy" : sum([float(h == r) for h, r in zip(hyps, refs)]) / len(hyps),
+                "accuracy" : sum([float(h == r) for h, r in zip(hyps, refs)]) / len(hyps)
             }
         return {
             "bleu" : sacrebleu.corpus_bleu(hyps, [refs]),
+            "cider" : self._calculate_cider_scores(hyps, refs),
             "ter" : sacrebleu.corpus_ter(hyps, [refs]),
-            "accuracy" : sum([float(h == r) for h, r in zip(hyps, refs)]) / len(hyps),
+            "accuracy" : sum([float(h == r) for h, r in zip(hyps, refs)]) / len(hyps)
         }
