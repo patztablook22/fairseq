@@ -7,6 +7,7 @@
 from .transformer_config import (
     TransformerConfig,
     TransformerModularConfig,
+    TransformerMultimodalConfig,
     DEFAULT_MAX_SOURCE_POSITIONS,
     DEFAULT_MAX_TARGET_POSITIONS,
     DEFAULT_MIN_PARAMS_TO_WRAP,
@@ -26,18 +27,21 @@ from .transformer_legacy import (
 )
 from .transformer_base import TransformerModelBase, Embedding
 from .transformer_modular import TransformerModularModel
+from .transformer_multimodal import TransformerMultimodalModel
 
 
 __all__ = [
     "TransformerModelBase",
     "TransformerConfig",
     "TransformerModularConfig",
+    "TransformerMultimodalConfig",
     "TransformerDecoder",
     "TransformerDecoderBase",
     "TransformerEncoder",
     "TransformerEncoderBase",
     "TransformerModel",
     "TransformerModularModel",
+    "TransformerMultimodalModel",
     "Embedding",
     "Linear",
     "base_architecture",

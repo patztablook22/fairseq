@@ -18,8 +18,12 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from PIL import Image
+from PIL import Image, ImageFile
 import torchvision.transforms as transforms
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+ImageFile.MAX_IMAGE_PIXELS = None
+Image.MAX_IMAGE_PIXELS = None
 
 
 if TYPE_CHECKING:

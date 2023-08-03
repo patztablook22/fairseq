@@ -19,7 +19,7 @@ from fairseq import options, tasks, utils
 from fairseq.binarizer import (
     AlignmentDatasetBinarizer,
     FileBinarizer,
-    ImageDatasetBinarizer,
+    FilePathDatasetBinarizer,
     VocabularyDatasetBinarizer,
 )
 from fairseq.data import Dictionary
@@ -162,7 +162,10 @@ def _make_binary_image_dataset(
             input_prefix
         )
     )
-    binarizer = ImageDatasetBinarizer(utils.parse_image)
+    # At the moment we only binarize the filepaths of the individual images
+    # the dataset reader should handle reading/transformation of the images
+    # TODO: effectively binarize the input images
+    binarizer = FilePathDatasetBinarizer()
 
     input_file = input_prefix
     full_output_prefix = dataset_dest_prefix(args, output_prefix, lang=None)

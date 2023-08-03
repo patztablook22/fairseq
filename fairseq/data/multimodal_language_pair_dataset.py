@@ -13,12 +13,12 @@ from PIL import Image, ImageFile
 from fairseq.data import data_utils
 from fairseq.data.language_pair_dataset import LanguagePairDataset
 
+logger = logging.getLogger(__name__)
+warnings.filterwarnings("ignore", "(Possibly )?corrupt EXIF data", UserWarning)
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 ImageFile.MAX_IMAGE_PIXELS = None
 Image.MAX_IMAGE_PIXELS = None
-
-logger = logging.getLogger(__name__)
-warnings.filterwarnings("ignore", "(Possibly )?corrupt EXIF data", UserWarning)
 
 IMAGENET_DEFAULT_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_DEFAULT_STD = (0.229, 0.224, 0.225)
@@ -173,12 +173,12 @@ def collate(
             constraints[i, 0 : lens[i]] = samples[i].get("constraints")
         batch["constraints"] = constraints.index_select(0, sort_order)
 
-    batch["net_input"]["patch_images"] = torch.stack(
-        [sample["patch_image"] for sample in samples], dim=0
+    batch["net_input"]["src_images"] = torch.stack(
+        [sample["src_image"] for sample in samples], dim=0
     )
-    batch["net_input"]["patch_masks"] = torch.cat(
-        [sample["patch_mask"] for sample in samples]
-    )
+    #batch["net_input"]["src_image_masks"] = torch.cat(
+    #    [sample["src_image_mask"] for sample in samples]
+    #)
 
     return batch
 
@@ -243,28 +243,22 @@ class MultimodalLanguagePairDataset(LanguagePairDataset):
             std = [0.5, 0.5, 0.5]
 
         self.patch_resize_transform = transforms.Compose([
+            transforms.PILToTensor(),
+            transforms.ConvertImageDtype(torch.float32),
+            transforms.Lambda(lambda x: x.expand(3, -1, -1)),
             transforms.Resize((patch_image_size, patch_image_size), interpolation=Image.BICUBIC),
             transforms.Normalize(mean=mean, std=std),
         ])
 
-        #if type(bpe).__name__ == 'GPT2BPE':
-        #    self.prompt = " what does the image describe?"
-        #elif type(bpe).__name__ == 'BertBPE':
-        #    self.prompt = "图片描述了什么内容?"
-
     def __getitem__(self, index):
         example = super().__getitem__(index)
-        image = self.img[index]
-
-        # Deflatten the flattened images
-        # (first three elements indicate the image shape)
-        if image.dim() == 1:
-            image = image[3:].view(torch.Size(image[:3]))
-        image = image.float()
+        image_path = "".join([chr(ord_tensor.item()) for ord_tensor in self.img[index]])
 
         # patch_image shape(channels, patch_image_size, patch_image_size)
-        example["patch_image"] = self.patch_resize_transform(image)
-        example["patch_mask"] = torch.tensor([True])
+        example["src_image"] = self.patch_resize_transform(
+            Image.open(image_path)
+        ).float()
+        example["src_image_mask"] = torch.tensor([True])
 
         return example
 

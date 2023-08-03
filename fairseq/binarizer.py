@@ -339,6 +339,31 @@ class ImageDatasetBinarizer(Binarizer):
         return pixels_flat
 
 
+class FilePathDatasetBinarizer(Binarizer):
+    """
+    binarize by parsing a set of filepaths and packing them into a tensor
+    of their ASCII representations
+    """
+    def __init__(
+        self,
+        filepath_parser: tp.Callable[[str], torch.IntTensor] = None,
+    ) -> None:
+        super().__init__()
+
+    def binarize_line(
+        self,
+        line: str,
+        summary: BinarizeSummary,
+    ):
+        line_ord = [ord(char) for char in line.strip()]
+        fp_tensor = torch.tensor(line_ord)
+
+        summary.num_seq += 1
+        summary.num_tok += len(fp_tensor)
+
+        return fp_tensor
+
+
 class LegacyBinarizer:
     @classmethod
     def binarize(

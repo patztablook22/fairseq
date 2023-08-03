@@ -403,8 +403,46 @@ class DecoderModularConfig(EncDecModularConfig):
         if self.output_dim == II("model.decoder.embed_dim"):
             self.output_dim = self.embed_dim
 
+
 @dataclass
 class TransformerModularConfig(TransformerConfig):
     module_ctrl: ModularCtrlConfig = ModularCtrlConfig()
     encoder: EncDecModularConfig = EncDecModularConfig()
     decoder: DecoderModularConfig = DecoderModularConfig()
+
+
+@dataclass
+class EncDecMultimodalConfig(EncDecBaseConfig):
+    shared_text_image_encoder: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+    input_image_text_concat: bool = field(
+        default=False, metadata={"help": "TODO"}
+    )
+    patch_size: int = field(
+        default=16, metadata={"help": "TODO"}
+    )
+
+
+@dataclass
+class DecoderMultimodalConfig(EncDecMultimodalConfig):
+    input_dim: int = II("model.decoder.embed_dim")
+    output_dim: int = field(
+        default=II("model.decoder.embed_dim"),
+        metadata={
+            "help": "decoder output dimension (extra linear layer if different from decoder embed dim)"
+        },
+    )
+
+    def __post_init__(self):
+        #  II doesn't work if we are just creating the object outside of hydra so fix that
+        if self.input_dim == II("model.decoder.embed_dim"):
+            self.input_dim = self.embed_dim
+        if self.output_dim == II("model.decoder.embed_dim"):
+            self.output_dim = self.embed_dim
+
+
+@dataclass
+class TransformerMultimodalConfig(TransformerConfig):
+    encoder: EncDecMultimodalConfig = EncDecMultimodalConfig()
+    decoder: DecoderMultimodalConfig = DecoderMultimodalConfig()

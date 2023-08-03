@@ -23,7 +23,6 @@ from fairseq.data import (
 )
 from fairseq.tasks import register_task
 from fairseq.tasks.translation import TranslationConfig, TranslationTask
-from omegaconf import OmegaConf
 
 from fairseq.cider.pyciderevalcap.ciderD.ciderD import CiderD
 
@@ -223,14 +222,14 @@ class MultimodalTranslationConfig(TranslationConfig):
         default=False, metadata={"help": "print sample generations during validation"}
     )
 
-    imagenet_default_mean_and_std: Any = field(
-        default=(0.5, 0.5, 0.5),
-        metadata={"help": "Imagenet normalization values."}
+    imagenet_default_mean_and_std: bool = field(
+        default=False,
+        metadata={"help": "Should we normalize the input for imagenet dataset."}
     )
 
     patch_image_size: int = field(
         default=224,
-        metadata={"help": "Size of the resized image input."}
+        metadata={"help": "Size of the resized input image."}
     )
 
     scst: bool = field(
@@ -248,14 +247,7 @@ class MultimodalTranslationConfig(TranslationConfig):
 class MultimodalTranslationTask(TranslationTask):
     def __init__(self, cfg: MultimodalTranslationConfig, src_dict, tgt_dict):
         super().__init__(cfg, src_dict, tgt_dict)
-        if isinstance(cfg.imagenet_default_mean_and_std, str):
-            self.imagenet_default_mean_and_std = eval(
-                cfg.imagenet_default_mean_and_std
-            )
-        else:
-            self.imagenet_default_mean_and_std = OmegaConf.to_container(
-                self.cfg.imagenet_default_mean_and_std
-            )
+        self.imagenet_default_mean_and_std = self.cfg.imagenet_default_mean_and_std
         self.patch_image_size = cfg.patch_image_size
 
     def load_dataset(self, split, epoch=1, combine=False, **kwargs):
@@ -360,12 +352,12 @@ class MultimodalTranslationTask(TranslationTask):
         ):
             metrics = self._inference(self.sequence_generator, sample, model)
 
-            if cfg.eval_bleu:
+            if self.cfg.eval_bleu:
                 logging_output["_bleu_sys_len"] = metrics["bleu"].sys_len
                 logging_output["_bleu_ref_len"] = metrics["bleu"].ref_len
                 # we split counts into separate entries so that they can be
                 # summed efficiently across workers using fast-stat-sync
-                assert len(bleu.counts) == EVAL_BLEU_ORDER
+                assert len(metrics["bleu"].counts) == EVAL_BLEU_ORDER
                 for i in range(EVAL_BLEU_ORDER):
                     logging_output["_bleu_counts_" + str(i)] = metrics["bleu"].counts[i]
                     logging_output["_bleu_totals_" + str(i)] = metrics["bleu"].totals[i]
@@ -462,8 +454,8 @@ class MultimodalTranslationTask(TranslationTask):
                 # reference, but doesn't get split into multiple tokens.
                 unk_string=("UNKNOWNTOKENINREF" if escape_unk else "UNKNOWNTOKENINHYP"),
             )
-            if self.bpe:
-                s = self.bpe.decode(s)
+            if self.tokenizer:
+                s = self.tokenizer.decode(s)
             return s
 
         gen_out = self.inference_step(generator, [model], sample)
@@ -482,13 +474,19 @@ class MultimodalTranslationTask(TranslationTask):
         if self.cfg.eval_tokenized_bleu:
             return {
                 "bleu" : sacrebleu.corpus_bleu(hyps, [refs], tokenize="none"),
-                "cider" : self._calculate_cider_scores(hyps, refs),
+                "cider" : (
+                    self._calculate_cider_scores(hyps, refs)
+                    if self.cfg.eval_cider else None)
+                ,
                 "ter" : sacrebleu.corpus_ter(hyps, [refs]),
                 "accuracy" : sum([float(h == r) for h, r in zip(hyps, refs)]) / len(hyps)
             }
         return {
             "bleu" : sacrebleu.corpus_bleu(hyps, [refs]),
-            "cider" : self._calculate_cider_scores(hyps, refs),
+            "cider" : (
+                self._calculate_cider_scores(hyps, refs)
+                if self.cfg.eval_cider else None
+            ),
             "ter" : sacrebleu.corpus_ter(hyps, [refs]),
             "accuracy" : sum([float(h == r) for h, r in zip(hyps, refs)]) / len(hyps)
         }
