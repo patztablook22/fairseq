@@ -13,13 +13,13 @@ GPUS=1
 
 EXPDIR=
 EVAL_DIR=
-TASKS="czeng"
+TASKS="xy"
 #TASKS="id push pop shift unshift reverse"
-VALID_TASKS="bpe.newstest"
+VALID_TASKS="all.20"
 #VALID_TASKS=$TASKS
 
-SRC=en
-TGT=cs
+SRC=x
+TGT=y
 
 # General Architecture Details
 EMB_SIZE=512
@@ -57,7 +57,7 @@ VALID_MAX_LEN_A=1.2
 VALID_MAX_LEN_B=10
 VALID_LENPEN=0.6
 
-BEST_METRIC="bleu"  # bleu, ter, accuracy
+BEST_METRIC="accuracy"  # bleu, ter, accuracy
 MINIMIZE_METRIC="--maximize-best-checkpoint-metric"  # We want maximization to be default
 
 EVAL_SCRIPT=process_checklist.sh
@@ -90,6 +90,8 @@ CTRL_BUDGET_WEIGHT=0.
 FREEZE_PARAMS=
 
 OPTS="$*"  # Save script parameters for rerun...
+
+echo "here1"
 
 HELP=1
 while [[ $# -gt 0 ]]; do
@@ -316,8 +318,12 @@ esac
 shift
 done
 
+echo "here2"
+
 [[ -d "$EXPDIR" ]] || exit 1
+echo "here3"
 [[ -d "$EVAL_DIR" ]] || exit 1
+echo "here4"
 # TODO print help
 
 MODEL_DIR="$EXPDIR/transformer_modular"
@@ -330,8 +336,10 @@ MODEL_DIR="$MODEL_DIR.ctrl-$CTRL_BLOCK-$CTRL_CODER"
 [[ -z "$CTRL_SAMPLING_OPT" ]] || MODEL_DIR="$MODEL_DIR.mod-hard-samples"
 MODEL_DIR="$MODEL_DIR.ratio-$CTRL_BUDGET_RATIO"
 MODEL_DIR="$MODEL_DIR.reg-$CTRL_BUDGET_WEIGHT"
+echo "here5"
 
 [[ -d $MODEL_DIR ]] && rm -r $MODEL_DIR
+echo here6
 mkdir $MODEL_DIR && mkdir $MODEL_DIR/checkpoints
 echo $OPTS > $MODEL_DIR/CMD_ARGS
 echo $TASKS | sed 's/ /->/g' > $MODEL_DIR/TASKS
@@ -363,16 +371,24 @@ elif [[ "$CTRL_BLOCK" == "all" ]]; then
         CTRL_CONTROL_OPT="--module-ctrl-encoder-attn --module-ctrl-encdec-attn --module-ctrl-decoder-attn --encoder-ffn-modules $FFN_MODULES --decoder-ffn-modules $FFN_MODULES"
     fi
 fi
+echo here7
 
 ckpt_opt=
 [[ -e "$INIT_CKPT" ]] && ckpt_opt="--restore-file $INIT_CKPT" && cp $INIT_CKPT $MODEL_DIR/checkpoints/checkpoint_last.pt
 
+echo here8
 update_opt=""
 if [[ $PATIENCE -eq 0 ]]; then
-    n_updates=`expr $INITIAL_UPDATE + $N_UPDATES`
+    echo here8 1
+    echo `expr $INITIAL_UPDATE + $N_UPDATES`
+    #n_updates=$(expr $INITIAL_UPDATE + $N_UPDATES)
+    n_updates=0
+    echo here8 2
     update_opt="$UPDATE_OPT $n_updates"
+    echo here8 3
 fi
 valid_sets=`echo $VALID_TASKS | sed 's/ /.valid,/g;s/$/.valid/'`
+echo here9
 for current_task in $TASKS; do
     echo Training $current_task...
 
@@ -392,16 +408,6 @@ for current_task in $TASKS; do
     [[ -e "$EXPDIR/data/${current_task}.mask" ]] \
         && CTRL_FIXED_MASK_OPT="--module-ctrl-fixed-mask '`cat $EXPDIR/data/${current_task}.mask`'"
 
-    jid=$($SLURM_SUBMIT \
-        --jobname "$current_task.train.mod" \
-        --constraints "$SLURM_CONSTRAINTS" \
-        --exclude "$EXCLUDE_NODES" \
-        --logdir "$MODEL_DIR/logs" \
-        --gpus $GPUS \
-        --mem $MEM \
-        --cores $CORES \
-        --priority $JOB_PRIORITY "source $VIRTUALENV && \
-            export CUDA_LAUNCH_BLOCKING=1 && \
             python train.py \
                 $EXPDIR/data \
                 -s $SRC \
@@ -466,14 +472,8 @@ for current_task in $TASKS; do
                 $CTRL_CONTROL_OPT \
                 $CTRL_FIXED_MASK_OPT \
                 $PARAM_FREEZE_OPT \
-                --save-interval-updates $SAVE_EVERY_N_UPDATES")
+                --save-interval-updates $SAVE_EVERY_N_UPDATES
 
-    jid=`echo $jid | cut -d" " -f4`
-    echo Waiting for $jid...
-    while true; do
-        sleep 15
-        squeue | grep " $jid " > /dev/null || break
-    done
 
     # Save the last ckpt for current task and set it as initial
     # ckpt for the next iteration

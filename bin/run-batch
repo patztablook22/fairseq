@@ -1,0 +1,65 @@
+#!/bin/bash
+
+PROJECT=$(realpath "$(dirname $0)/..")
+BATCH=$PROJECT/pbs/batch
+LOGDIR=$PROJECT/log
+
+JOB=$(qsub -o $LOGDIR \
+           -l select=1:ngpus=1:ncpus=2:mem=16gb:gpu_mem=16gb:scratch_local=30gb \
+           -q gpu \
+           $BATCH)
+
+[ "$?" != "0" ] && exit 1
+
+echo "Once finished, the program's STDOUT and STDERR will appear in ${LOGDIR}/${JOB}.OU"
+echo "Status: (You can exit now, the job will run in the background anyway)"
+
+STATUS=""
+
+while sleep 0.5; do
+    NEWSTATUS=$(qstat -x $JOB | tail -n1 | awk '{printf $5}')
+    [ "$STATUS" == "$NEWSTATUS" ] && continue
+
+    STATUS=$NEWSTATUS
+    case $STATUS in
+        B)  
+            echo "> Array job has at least one subjob running"
+            ;;
+        E)
+            echo "> Job is exiting"
+            ;;
+        F)
+            echo "> Job is finished"
+            exit
+            ;;
+        H)
+            echo "> Job is held"
+            ;;
+        M)
+            echo "> Job was moved to another server"
+            ;;
+        Q)
+            echo "> Job is queued"
+            ;;
+        R)
+            echo "> Job is running"
+            ;;
+        S)
+            echo "> Job is suspended"
+            ;;
+        T)
+            echo "> Job is being moved to new location"
+            ;;
+        U)
+            echo "> Cycle-harvesting job is suspended due to keyboard activity"
+            ;;
+        W)
+            echo "> Job is waiting for its submitter-assigned start time to be reached"
+            ;;
+        X)
+            echo "> Subjob has completed execution or has been deleted"
+            ;;
+    esac
+done
+
+

@@ -1,0 +1,39 @@
+#!/usr/bin/bash
+
+#PBS -N never_gonna_give_you_up
+#PBS -j oe
+
+
+# Please manually insert the absolute path your clone of this github repository.
+# I'm sorry, I couldn't find a way to avoid this. If you do, let me know. :)
+# E.g. run `pwd` from the root of the repository you cloned.
+PROJECT=/storage/brno2/home/zavorap/fairseq
+
+
+SCRATCH_PROJECT=$SCRATCHDIR/urmom
+SCRATCH_VENV=$SCRATCH_PROJECT/venv
+REQUIREMENTS=$PROJECT/requirements.txt
+
+export TMPDIR=$SCRATCHDIR
+
+rm -rf $SCRATCHDIR
+
+module add \
+    python/python-3.10.4-gcc-8.3.0-ovkjwzd \
+    cuda/cuda-11.2.0-intel-19.0.4-tn4edsz \
+    cudnn/cudnn-8.1.0.77-11.2-linux-x64-intel-19.0.4-wx22b5t \
+    gcc/gcc-8.3.0-gcc-4.8.5-6ypggms
+
+if [ ! -d $SCRATCH_VENV ]; then
+    mkdir -p $SCRATCH_VENV
+    python3.10 -m venv $SCRATCH_VENV
+    source $SCRATCH_VENV/bin/activate
+    pip3 install -r $REQUIREMENTS || (echo "Installing dependencies failed." >&2 && exit 1)
+else
+    source $SCRATCH_VENV/bin/activate
+fi
+
+while :; do
+    python3 $PROJECT/src/main.py $PROJECT
+    [ "$?" -eq 69 ] || break
+done

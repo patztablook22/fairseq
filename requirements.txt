@@ -1,0 +1,6 @@
+torch==2.1.0
+accelerate==0.23.0
+transformers==4.34.1
+git+https://github.com/patztablook22/shellbot
+sacremoses
+sacrebleu

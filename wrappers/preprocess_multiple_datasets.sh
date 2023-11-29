@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 WORKERS=4
 
@@ -66,6 +66,14 @@ done
 
 LANG=$SRC-$TGT
 
+
+echo $DATA_DIR
+echo $TRAIN_SETS
+echo $VALID_SETS
+echo $TEST_SETS
+#exit 1
+
+rm -rf $EXP_DIR/data
 mkdir -p $EXP_DIR/data
 # Concatenate train sets to create single vocabulary
 for l in $SRC $TGT; do

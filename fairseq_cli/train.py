@@ -50,6 +50,8 @@ def add_fixed_mask_to_input(sample, args):
 
 
 def main(args, init_distributed=False):
+    # TODO
+    # TRAINING HERE
     utils.import_user_module(args)
 
     assert args.max_tokens is not None or args.max_sentences is not None, \

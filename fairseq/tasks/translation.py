@@ -278,7 +278,14 @@ class TranslationTask(FairseqTask):
                 **detok_args
             ))
 
-            gen_args = json.loads(getattr(args, 'eval_bleu_args', '{}') or '{}')
+            temp_json = getattr(args, 'eval_bleu_args', '{}') or '{}'
+            #temp_json = temp_json.replace('\\"', '"')
+            try:
+                gen_args = json.loads(temp_json)
+            except:
+                print(temp_json)
+                exit(5)
+
             self.sequence_generator = self.build_generator([model], Namespace(**gen_args))
         return model
 

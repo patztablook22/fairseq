@@ -13,13 +13,13 @@ GPUS=1
 
 EXPDIR=
 EVAL_DIR=
-TASKS="czeng"
+TASKS="reverse.30"
 #TASKS="id.15 push.15 pop.15 shift.15 unshift.15 reverse.15"
-VALID_TASKS="bpe.newstest"
+VALID_TASKS="reverse.30"
 #VALID_TASKS=$TASKS
 
-SRC=en
-TGT=cs
+SRC=x
+TGT=y
 
 # General Architecture Details
 EMB_SIZE=512
@@ -59,7 +59,7 @@ VALID_LENPEN=0.6
 BEST_METRIC="bleu"  # bleu, ter, accuracy
 MINIMIZE_METRIC="--maximize-best-checkpoint-metric"  # We want maximization to be default
 
-EVAL_SCRIPT=process_checklist.sh  # Validation wrapper (called at the end of each task training)
+EVAL_SCRIPT="$(dirname $0)/process_checklist.sh"  # Validation wrapper (called at the end of each task training)
 
 # Parameter freeze (for consecutive tasks)
 FREEZE_PARAMS=
@@ -258,16 +258,6 @@ for current_task in $TASKS; do
         [[ -n $FREEZE_PARAMS ]] && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
     fi
 
-    jid=$($SLURM_SUBMIT \
-        --jobname "$current_task.train" \
-        --constraints "$SLURM_CONSTRAINTS" \
-        --exclude "$EXCLUDE_NODES" \
-        --logdir "$MODEL_DIR/logs" \
-        --gpus $GPUS \
-        --mem $MEM \
-        --cores $CORES \
-        --priority $JOB_PRIORITY "source $VIRTUALENV && \
-            export CUDA_LAUNCH_BLOCKING=1 && \
             python train.py \
                 $EXPDIR/data \
                 -s $SRC \
@@ -283,7 +273,7 @@ for current_task in $TASKS; do
                 $RESET_OPTIMIZER_OPT \
                 --num-workers 0 \
                 --optimizer adam \
-                --adam-betas '($ADAM_BETA_1, $ADAM_BETA_2)' \
+                --adam-betas "($ADAM_BETA_1, $ADAM_BETA_2)" \
                 --clip-norm $CLIP_NORM \
                 --patience $PATIENCE \
                 $update_opt \
@@ -298,7 +288,7 @@ for current_task in $TASKS; do
                 --eval-acc \
                 --eval-ter \
                 --eval-bleu \
-                --eval-bleu-args '{\"beam\": $VALID_BEAM_SIZE, \"max_len_a\": $VALID_MAX_LEN_A, \"max_len_b\": $VALID_MAX_LEN_B, \"lenpen\": $VALID_LENPEN}' \
+                --eval-bleu-args "{\"beam\": $VALID_BEAM_SIZE, \"max_len_a\": $VALID_MAX_LEN_A, \"max_len_b\": $VALID_MAX_LEN_B, \"lenpen\": $VALID_LENPEN}" \
                 --eval-bleu-detok moses \
                 --eval-bleu-remove-bpe \
                 --eval-bleu-print-samples \
@@ -314,14 +304,14 @@ for current_task in $TASKS; do
                 --encoder-embed-dim $EMB_SIZE \
                 --encoder-ffn-embed-dim $FFN_SIZE \
                 $PARAM_FREEZE_OPT \
-                --save-interval-updates $SAVE_EVERY_N_UPDATES")
+                --save-interval-updates $SAVE_EVERY_N_UPDATES
 
-    jid=`echo $jid | cut -d" " -f4`
-    echo Waiting for $jid...
-    while true; do
-        sleep 15
-        squeue | grep " $jid " > /dev/null || break
-    done
+#    jid=`echo $jid | cut -d" " -f4`
+#    echo Waiting for $jid...
+#    while true; do
+#        sleep 15
+#        squeue | grep " $jid " > /dev/null || break
+#    done
 
     # Save the last ckpt for current task and set it as initial
     # ckpt for the next iteration
@@ -331,7 +321,7 @@ for current_task in $TASKS; do
 
     # Validate
     echo "Validating using $EVAL_SCRIPT..."
-    for t in test; do
+    #for t in test; do
         bash $EVAL_SCRIPT \
             -t $current_task \
             --src $SRC \
@@ -341,11 +331,11 @@ for current_task in $TASKS; do
             --lenpen $VALID_LENPEN \
             --tasks "`echo $VALID_TASKS | sed 's/bpe.//'`" \
             --eval-dir $EVAL_DIR \
-            --eval-prefix "$t" 2>&1 \
+            --eval-prefix "test" 2>&1 \
         | tee -a $MODEL_DIR/logs/$current_task.eval.log &
-    done
+    #done
 
-    n_updates=`expr $n_updates + $N_UPDATES`
-    update_opt="$UPDATE_OPT $n_updates"
-    [[ $PATIENCE -gt 0 ]] && update_opt=""
+    #n_updates=`expr $n_updates + $N_UPDATES`
+    #update_opt="$UPDATE_OPT $n_updates"
+    #[[ $PATIENCE -gt 0 ]] && update_opt=""
 done
