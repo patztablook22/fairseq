@@ -9,6 +9,11 @@ def generate_x(min_length, max_length):
     length = np.random.randint(low=min_length, high=max_length)
     return np.random.choice(2, size=length)
 
+def pad_to_length(sequence, length, end_char, pad_char):
+    assert len(sequence) < length
+    return np.concatenate([sequence,
+                          [end_char] + [pad_char] * (length - 1 - len(sequence))])
+
 def create_id_example(x, tok=None, n=None):
     return (x, "-", "-")
 
@@ -64,6 +69,10 @@ def main(args):
         mapping = np.array([args.zero_char, args.one_char])
         x_c = mapping[x]
         y_c = mapping[y]
+        if args.pad_to_length:
+            x_c = pad_to_length(x_c, args.pad_to_length, args.end_char, args.pad_char)
+            y_c = pad_to_length(y_c, args.pad_to_length, args.end_char, args.pad_char)
+
         print(f"{args.task} {tok} {n}\t{' '.join(x_c)}\t{' '.join(y_c)}")
 
 def parse_args():
@@ -76,6 +85,9 @@ def parse_args():
     parser.add_argument("--n-examples", type=int, default=3000)
     parser.add_argument("--zero-char", type=str, default='a')
     parser.add_argument("--one-char", type=str, default='b')
+    parser.add_argument("--pad-to-length", type=int, default=None)
+    parser.add_argument("--end-char", type=str, default='c')
+    parser.add_argument("--pad-char", type=str, default='d')
     return parser.parse_args()
 
 if __name__ == '__main__':

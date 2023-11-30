@@ -19,6 +19,9 @@ mkdir -p $OUTDIR $TMPDIR
 for op in $OPS; do
     zero_char="a"
     one_char="b"
+    pad_to_length=70
+    end_char="c"
+    pad_char="d"
 
     old_n=1
     for n in 20 30 40 50 60; do
@@ -33,6 +36,9 @@ for op in $OPS; do
             --n-examples $SIZE \
             --zero-char $zero_char \
             --one-char $one_char \
+            --pad-to-length $pad_to_length \
+            --end-char $end_char \
+            --pad-char $pad_char \
             > $tmp_out
 
         awk '{if (NR <= 1000) print $0;}' $tmp_out > $tmp_out.valid
