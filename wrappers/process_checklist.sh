@@ -111,7 +111,7 @@ GPUS=1
 
 SERIES_AVG=my_scripts/average_dynamic_series.py
 
-TRANSLATION_OPT="-s $SRC -t $TGT --beam $BEAM_SIZE --lenpen $LENPEN $TRANSLATION_OPT"
+TRANSLATION_OPT="-s $SRC -t $TGT --beam-size $BEAM_SIZE --lenpen $LENPEN $TRANSLATION_OPT"
 
 # TODO print help
 
@@ -137,6 +137,36 @@ function evaluate {
     paste $RESULTS_DIR/$hyps_file.hyps.txt $EVAL_DIR/${_file}.$TGT | my_scripts/compare_sequences.py > $RESULTS_DIR/$hyps_file.eval_out
 }
 
+function dump_data {
+    echo HEEEEEEEEEEERE
+    _task=$1
+    _dataset=$2
+    _results_dir=$3
+
+    _hyps_file=$_results_dir/$CURRENT_TASK.hyps
+    _x_file=$_results_dir/$CURRENT_TASK.x
+    _y_file=$_results_dir/$CURRENT_TASK.y
+
+    _file=$_task.$_dataset
+    outfile=$SCRATCH/temp_$(date +%s)_$_task
+    #echo .
+    #echo .
+    #echo .$_task
+    #echo .$length
+    #echo .$_dataset
+    #echo .$_results_dir
+    #echo .
+    #echo .
+    #cat $EVAL_DIR/${_file}.$SRC | wrappers/translate_wrapper_interactive.sh 
+    wrappers/translate_wrapper_interactive.sh \
+        $EVAL_DIR/${_file}.$SRC \
+        "$EXP_DIR" "_$CURRENT_TASK" "$outfile" $TRANSLATION_OPT && \
+        cat $outfile.$CURRENT_TASK.txt >> $_hyps_file
+
+    cat $EVAL_DIR/$_file.$SRC >> $_x_file
+    cat $EVAL_DIR/$_file.$TGT >> $_y_file
+}
+
 function translate {
     # The function takes two global variables (modifiers) for varying modes of translation:
     _file=$1
@@ -145,13 +175,14 @@ function translate {
     outfile=$RESULTS_DIR/${_file}
 
     #cmd="source $VIRTUALENV && export CUDA_LAUNCH_BLOCKING=1"
-    cmd="cat $EVAL_DIR/${_file}.$SRC"
-    cmd="$cmd | wrappers/translate_wrapper_interactive.sh $_sys '_$CURRENT_TASK' $outfile '$TRANSLATION_OPT'"
-    cmd="$cmd && mv $outfile.$CURRENT_TASK.txt $outfile.txt"
 
-    [[ -e "$outfile.txt" ]] && exit 0
+    #[[ -e "$outfile.txt" ]] && exit 0
 
-    $cmd
+    #$cmd
+    cat $EVAL_DIR/${_file}.$SRC | wrappers/translate_wrapper_interactive.sh \
+        $_sys _$CURRENT_TASK $outfile $TRANSLATION_OPT && \
+        mv $outfile.$CURRENT_TASK.txt $outfile.txt
+
     #jid=`$SLURM_SUBMIT --jobname tr_eval --constraints "$SLURM_CONSTRAINTS" --exclude "$EXCLUDE_NODES" --logdir logs --gpus $GPUS --mem $GPUMEM --cores $CORES --priority $JOB_PRIORITY "$cmd"`
     #jid=`echo $jid | cut -d" " -f4`
     #echo $jid
@@ -179,42 +210,19 @@ function process_files {
     _dir=$2
 
     for task in $TASKS; do 
-        msg "Processing $task.$_dataset ..."
+        msg "Processing $task ..."
+        dump_data "$task" "$_dataset" "$RESULTS_DIR"
 
-        translate $task.$_dataset $EXP_DIR
-        #jid=`translate $task.$_dataset $EXP_DIR`
-        #msg "Waiting for job $jid..."
-        #while true; do
-        #    [[ -z $jid ]] && break
-        #    sleep 20
-        #    #qstat | grep $jid > /dev/null || break
-        #    squeue | grep " $jid " > /dev/null || break
-        #done
-        evaluate $task.$_dataset $EXP_DIR
-
-        for len in $LENGTHS; do
-            msg "Processing $task.$len.$_dataset ..."
-
-                
-            translate $task.$len.$_dataset $EXP_DIR
-            #jid=`translate $task.$len.$_dataset $EXP_DIR`
-            #msg "Waiting for job $jid..."
-            #while true; do
-            #    [[ -z $jid ]] && break
-            #    sleep 20
-            #    #qstat | grep $jid > /dev/null || break
-            #    squeue | grep " $jid " > /dev/null || break
-            #done
-            evaluate $task.$len.$_dataset $EXP_DIR
-
-            #mkdir -p $EVAL_DIR/$OUTPUT_DIR/attention
-            #extract_attention $task.$len.$_dataset $EXP_DIR
-        done
+        #translate $task.$_dataset $EXP_DIR
+        #evaluate $task.$_dataset $EXP_DIR
     done
+
+    echo EXP_DIR
+    echo $EXP_DIR
 }
 
 RESULTS_DIR=$EXP_DIR/$CURRENT_TASK.bs-$BEAM_SIZE.lp-$LENPEN.eval
-[[ $OVERWRITE -eq 0 ]] && [[ -d $RESULTS_DIR ]] && rm -r $RESULTS_DIR
+[[ $OVERWRITE -eq 1 ]] && [[ -d $RESULTS_DIR ]] && rm -r $RESULTS_DIR
 [[ -d "$RESULTS_DIR" ]] || mkdir -p $RESULTS_DIR
 
 process_files $EVAL_DATASET $EVAL_DIR

@@ -2,4 +2,6 @@
 
 cd "$(dirname $0)/.."
 
-ls $SCRATCH/experiments/str-edit.compo.30000/transformer
+pwd
+ls -la  /storage/brno2/home/zavorap/fairseq/custom_examples/translation/str-edit.compo.30000/reverse.20.test.x
+#/dict.x.txt

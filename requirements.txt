@@ -4,3 +4,4 @@ transformers==4.34.1
 git+https://github.com/patztablook22/shellbot
 sacremoses
 sacrebleu
+tensorboardX

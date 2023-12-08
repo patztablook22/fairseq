@@ -1,23 +1,29 @@
 #!/bin/bash
 
-EXPDIR=$1
-CKPT_ID=${2:-"_best"}
-PREFIX=${3:-"results"}
-OPTS=${4:-""}
 
-BEAM_SIZE=${5:-4}
-LP=${6:-0.6}
+INPUT=$1
+EXPDIR=$2
+CKPT_ID=${3:-"_best"}
+PREFIX=${4:-"results"}
+OPTS="-s x -t y"
+
+BEAM_SIZE=1
+LP=0.6
 
 #CKPT_ID="_last"
 #CKPT_ID="_best"
 #CKPT_ID="1"
 
-INPUT_PATH=$EXPDIR/../data
+DATA_PATH=$EXPDIR/../data
 RESULTS_FILE=$PREFIX.${CKPT_ID##"_"}.txt
 CKPT=$EXPDIR/checkpoints/checkpoint$CKPT_ID.pt
 
-cat /dev/stdin | python interactive.py \
-    $INPUT_PATH \
+echo .$INPUT
+echo .
+
+python interactive.py \
+    $DATA_PATH \
+    --input $INPUT \
     --path $CKPT \
     --beam $BEAM_SIZE \
     --lenpen $LP \
