@@ -1,29 +1,31 @@
 #!/bin/bash
-set -e
+set -eou pipefail
+# CONSTANTS
+VIRTUALENV="/home/varis/python-virtualenv/fairseq-env/bin/activate"
+MEM="10g"
+GPUMEM="11g"
+GPUS=1
+SERIES_AVG=my_scripts/average_dynamic_series.py
 
-JOB_PRIORITY=10
-SLURM_CONSTRAINTS=
-EXCLUDE_NODES="dll-10gpu1,dll-10gpu2,dll-10gpu3"
-SLURM_SUBMIT="/home/varis/scripts/slurm-submit.sh"
+SRC=x
+TGT=y
 
 EXP_DIR=
 TRANSLATION_OPT=""
 BEAM_SIZE=1
 LENPEN=0.6
 
-SRC=x
-TGT=y
+TRANSLATION_OPT="-s $SRC -t $TGT --beam $BEAM_SIZE --lenpen $LENPEN $TRANSLATION_OPT"
 
-USE_ORACLE=1
-MODULE_MASK=
-THRESHOLD=
+JOB_PRIORITY=10
+SLURM_CONSTRAINTS=
+PARTITION="gpu-ms,gpu-troja"
 
 CURRENT_TASK=
-TASKS="id push pop shift unshift reverse"
-LENGTHS=
+TASKS="reverse.30 all.30"
 
 EVAL_DATASET="test"
-EVAL_DIR="custom_examples/translation/bitedit.30000"
+EVAL_DIR="custom_examples/translation/str-edit.compo.30000"
 
 OVERWRITE=1
 
@@ -69,21 +71,6 @@ case $key in
         TASKS="$2"
         shift
     ;;
-    --task-lengths)
-        LENGTHS="$2"
-        shift
-    ;;
-    --use-oracle)
-        USE_ORACLE=0
-    ;;
-    --module-mask)
-        MODULE_MASK="$2"
-        shift
-    ;;
-    --threshold)
-        THRESHOLD="$2"
-        shift
-    ;;
     --translation-options)
         TRANSLATION_OPT="$2"
         shift
@@ -102,17 +89,6 @@ esac
 shift
 done
 
-# CONSTANTS
-VIRTUALENV="/home/varis/python-virtualenv/fairseq-env/bin/activate"
-CORES=4
-MEM="10g"
-GPUMEM="11g"
-GPUS=1
-
-SERIES_AVG=my_scripts/average_dynamic_series.py
-
-TRANSLATION_OPT="-s $SRC -t $TGT --beam-size $BEAM_SIZE --lenpen $LENPEN $TRANSLATION_OPT"
-
 # TODO print help
 
 
@@ -125,7 +101,6 @@ function evaluate {
     _sys=$2
 
     hyps_file=$_file
-    [[ -n "$MODULE_MASK" ]] && hyps_file="${hyps_file}.mask-$MODULE_MASK"
 
     # extract hypotheses and compute BLEU againts references
     grep '^H' $RESULTS_DIR/$hyps_file.txt \
@@ -137,34 +112,36 @@ function evaluate {
     paste $RESULTS_DIR/$hyps_file.hyps.txt $EVAL_DIR/${_file}.$TGT | my_scripts/compare_sequences.py > $RESULTS_DIR/$hyps_file.eval_out
 }
 
-function dump_data {
-    echo HEEEEEEEEEEERE
-    _task=$1
-    _dataset=$2
-    _results_dir=$3
+function dump {
+    # The function takes two global variables (modifiers) for varying modes of translation:
+    _file=$1
+    _sys=$2
 
-    _hyps_file=$_results_dir/$CURRENT_TASK.hyps
-    _x_file=$_results_dir/$CURRENT_TASK.x
-    _y_file=$_results_dir/$CURRENT_TASK.y
+    outfile=$RESULTS_DIR/${_file}
 
-    _file=$_task.$_dataset
-    outfile=$SCRATCH/temp_$(date +%s)_$_task
-    #echo .
-    #echo .
-    #echo .$_task
-    #echo .$length
-    #echo .$_dataset
-    #echo .$_results_dir
-    #echo .
-    #echo .
-    #cat $EVAL_DIR/${_file}.$SRC | wrappers/translate_wrapper_interactive.sh 
+    in_x=$EVAL_DIR/${_file}.$SRC
+    in_y=$EVAL_DIR/${_file}.$TGT
+    out_x=$RESULTS_DIR/$CURRENT_TASK.x
+    out_y=$RESULTS_DIR/$CURRENT_TASK.y
+    out_hyps=$RESULTS_DIR/$CURRENT_TASK.hyps
+
+    tempfile="$SCRATCH/temp_${_file}_$(date +%s)"
+
+    #cmd="cat $in_x | wrappers/translate_wrapper_interactive.sh $_sys '_$CURRENT_TASK' $tempfile '$TRANSLATION_OPT'"
+    #bash -c "$cmd"
+
     wrappers/translate_wrapper_interactive.sh \
-        $EVAL_DIR/${_file}.$SRC \
-        "$EXP_DIR" "_$CURRENT_TASK" "$outfile" $TRANSLATION_OPT && \
-        cat $outfile.$CURRENT_TASK.txt >> $_hyps_file
+        $in_x \
+        "$EXP_DIR" "_$CURRENT_TASK" "$tempfile" $TRANSLATION_OPT
 
-    cat $EVAL_DIR/$_file.$SRC >> $_x_file
-    cat $EVAL_DIR/$_file.$TGT >> $_y_file
+    grep '^H' $tempfile.$CURRENT_TASK.txt \
+        | sed 's/^H\-//' \
+        | sort -n -k 1 \
+        | cut -f3 \
+        >> $out_hyps
+
+    cat $in_x >> $out_x
+    cat $in_y >> $out_y
 }
 
 function translate {
@@ -174,35 +151,28 @@ function translate {
 
     outfile=$RESULTS_DIR/${_file}
 
-    #cmd="source $VIRTUALENV && export CUDA_LAUNCH_BLOCKING=1"
+    cmd="source $VIRTUALENV && export CUDA_LAUNCH_BLOCKING=1"
+    cmd="$cmd && cat $EVAL_DIR/${_file}.$SRC"
+    cmd="$cmd | wrappers/translate_wrapper_interactive.sh $_sys '_$CURRENT_TASK' $outfile '$TRANSLATION_OPT'"
+    cmd="$cmd && mv $outfile.$CURRENT_TASK.txt $outfile.txt"
 
-    #[[ -e "$outfile.txt" ]] && exit 0
-
-    #$cmd
-    cat $EVAL_DIR/${_file}.$SRC | wrappers/translate_wrapper_interactive.sh \
-        $_sys _$CURRENT_TASK $outfile $TRANSLATION_OPT && \
-        mv $outfile.$CURRENT_TASK.txt $outfile.txt
-
-    #jid=`$SLURM_SUBMIT --jobname tr_eval --constraints "$SLURM_CONSTRAINTS" --exclude "$EXCLUDE_NODES" --logdir logs --gpus $GPUS --mem $GPUMEM --cores $CORES --priority $JOB_PRIORITY "$cmd"`
-    #jid=`echo $jid | cut -d" " -f4`
-    #echo $jid
+    [[ -e "$outfile.txt" ]] && exit 0
+	mkdir -p logs
+    srun \
+        -J "tr_eval" \
+        -o "logs/tr_eval.o%j" \
+        -e "logs/tr_eval.o%j" \
+        -p "$PARTITION" \
+        -C "$SLURM_CONSTRAINTS" \
+        --mem $GPUMEM \
+        --gpus $GPUS \
+        --priority $JOB_PRIORITY \
+        bash -c "$cmd"
 }
 
 function extract_attention {
-    _file=$1
-    _sys=$2
-
-    infile="$EVAL_DIR/${_file}.x"
-    outfile="$EVAL_DIR/$RESULTS_DIR/attention/${_file}"
-    mkdir -p $RESULTS_DIR/attention
-
-    #cmd="source $VIRTUALENV"
-    cmd="my_scripts/extract_attention.py --input-file $infile --checkpoint $_sys/checkpoints/checkpoint_$CURRENT_TASK.pt --output-file $outfile"
-
-    $cmd
-    #jid=`qsubmit --jobname=tr_att --logdir=logs --gpus=$GPUS --gpumem=$GPUMEM --mem=$MEM --cores=$CORES --priority=$JOB_PRIORITY "$cmd"`
-    #jid=`echo $jid | cut -d" " -f3`
-    #echo $jid
+	# pass
+	sleep 1
 }
 
 function process_files {
@@ -210,21 +180,22 @@ function process_files {
     _dir=$2
 
     for task in $TASKS; do 
-        msg "Processing $task ..."
-        dump_data "$task" "$_dataset" "$RESULTS_DIR"
-
-        #translate $task.$_dataset $EXP_DIR
-        #evaluate $task.$_dataset $EXP_DIR
+        msg "Processing $task.$_dataset ..."
+        dump $task.$_dataset $EXP_DIR $RESULTS_DIR
     done
-
-    echo EXP_DIR
-    echo $EXP_DIR
 }
 
 RESULTS_DIR=$EXP_DIR/$CURRENT_TASK.bs-$BEAM_SIZE.lp-$LENPEN.eval
-[[ $OVERWRITE -eq 1 ]] && [[ -d $RESULTS_DIR ]] && rm -r $RESULTS_DIR
+[[ $OVERWRITE -eq 0 ]] && [[ -d $RESULTS_DIR ]] && rm -r $RESULTS_DIR
 [[ -d "$RESULTS_DIR" ]] || mkdir -p $RESULTS_DIR
 
 process_files $EVAL_DATASET $EVAL_DIR
+
+
+PROJECT_DIR="$(dirname $0)/.."
+mkdir $PROJECT_DIR/results
+
+echo "cp -r $RESULTS_DIR $PROJECT_DIR/results ..."
+cp -r $RESULTS_DIR $PROJECT_DIR/results
 
 # TODO: include clustering eval

@@ -11,7 +11,7 @@ wrappers/train_transformer.sh \
     --att-heads 1 \
     --lr 1e-4 \
     --epochs-not-updates \
-    --max-updates 1 \
+    --max-updates 100 \
     --minimize-metric \
     --best-metric ter \
     2>&1

@@ -15,7 +15,8 @@ EXPDIR=
 EVAL_DIR=
 TASKS="reverse.30"
 #TASKS="id.15 push.15 pop.15 shift.15 unshift.15 reverse.15"
-VALID_TASKS="reverse.20 reverse.40 reverse.50 reverse.60"
+VALID_TASKS="reverse.30"
+VALID_TASKS2="reverse.20 reverse.30 reverse.40 reverse.50 reverse.60"
 #VALID_LENGTHS="20 40 50 60"
 #VALID_TASKS=$TASKS
 
@@ -235,8 +236,8 @@ MODEL_DIR="$MODEL_DIR.emb-size-$EMB_SIZE"
 MODEL_DIR="$MODEL_DIR.att-heads-$ATT_HEADS"
 MODEL_DIR="$MODEL_DIR.depth-$DEPTH"
 
-#[[ -d $MODEL_DIR ]] && rm -r $MODEL_DIR
-#mkdir $MODEL_DIR && mkdir $MODEL_DIR/checkpoints
+[[ -d $MODEL_DIR ]] && rm -r $MODEL_DIR
+mkdir -p $MODEL_DIR/checkpoints
 echo $OPTS > $MODEL_DIR/CMD_ARGS
 echo $TASKS | sed 's/ /->/g' > $MODEL_DIR/TASKS
 echo $FREEZE_PARAMS > $MODEL_DIR/FREEZE_PARAMS
@@ -259,7 +260,7 @@ for current_task in $TASKS; do
         [[ -n $FREEZE_PARAMS ]] && PARAM_FREEZE_OPT="--parameter-freeze-substr '$FREEZE_PARAMS'"
     fi
 
-            :||python train.py \
+            python train.py \
                 $EXPDIR/data \
                 -s $SRC \
                 -t $TGT \
@@ -333,10 +334,10 @@ for current_task in $TASKS; do
             --expdir $MODEL_DIR \
             --beam-size $VALID_BEAM_SIZE \
             --lenpen $VALID_LENPEN \
-            --tasks "`echo $VALID_TASKS | sed 's/bpe.//'`" \
-            --task-lengths "$VALID_LENGTHS" \
+            --tasks "`echo $VALID_TASKS2 | sed 's/bpe.//'`" \
             --eval-dir $EVAL_DIR \
             --eval-prefix "test" 2>&1 \
+            --overwrite \
         | tee -a $MODEL_DIR/logs/$current_task.eval.log &
     #done
 
